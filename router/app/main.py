@@ -491,6 +491,8 @@ async def check_model_downloaded(hf_path: str) -> Dict[str, Any]:
 
 async def get_container_status(container_name: str) -> Dict[str, Any]:
     """Get status of a Docker container"""
+    from datetime import datetime
+
     # Get container state
     success, output = await run_docker_command([
         "docker", "inspect", "--format", "{{.State.Status}}", container_name
@@ -509,7 +511,6 @@ async def get_container_status(container_name: str) -> Dict[str, Any]:
             "docker", "inspect", "--format", "{{.State.StartedAt}}", container_name
         ])
         if success:
-            from datetime import datetime
             try:
                 started_at = datetime.fromisoformat(uptime.strip().replace('Z', '+00:00'))
                 uptime_seconds = (datetime.now(started_at.tzinfo) - started_at).total_seconds()
@@ -518,13 +519,36 @@ async def get_container_status(container_name: str) -> Dict[str, Any]:
             except:
                 pass
 
-    # Check for failed state
+    # Check for exited/stopped state
     if status == "exited":
+        # Get exit time to detect if recently stopped (unloading)
+        success, finished_at = await run_docker_command([
+            "docker", "inspect", "--format", "{{.State.FinishedAt}}", container_name
+        ])
+        if success:
+            try:
+                finished = datetime.fromisoformat(finished_at.strip().replace('Z', '+00:00'))
+                seconds_since_exit = (datetime.now(finished.tzinfo) - finished).total_seconds()
+                # If stopped less than 10 seconds ago, show as unloading
+                if seconds_since_exit < 10:
+                    result["status"] = "unloading"
+            except:
+                pass
+
+        # Check exit code for failure
         success, exit_code = await run_docker_command([
             "docker", "inspect", "--format", "{{.State.ExitCode}}", container_name
         ])
         if success and exit_code.strip() != "0":
-            result["status"] = "failed"
+            # Check logs for GPU memory error
+            log_success, logs = await run_docker_command([
+                "docker", "logs", "--tail", "50", container_name
+            ])
+            if log_success and ("Free memory" in logs or "GPU memory utilization" in logs or "gpu_memory_utilization" in logs):
+                result["status"] = "insufficient_gpu_ram"
+                result["error"] = "Insufficient GPU memory available"
+            else:
+                result["status"] = "failed"
             result["exit_code"] = exit_code.strip()
 
     return result

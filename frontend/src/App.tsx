@@ -185,6 +185,10 @@ function App() {
                       return { icon: '●', text: 'Running', color: 'running' };
                     case 'loading':
                       return { icon: '◐', text: 'Loading into GPU-mem', color: 'loading' };
+                    case 'unloading':
+                      return { icon: '◑', text: 'Unloading model', color: 'unloading' };
+                    case 'insufficient_gpu_ram':
+                      return { icon: '⚠', text: 'Insufficient free GPU-ram', color: 'insufficient_gpu_ram' };
                     case 'failed':
                       return { icon: '✕', text: 'Failed', color: 'failed' };
                     case 'exited':
@@ -195,7 +199,7 @@ function App() {
                 };
 
                 const statusDisplay = getStatusDisplay();
-                const isActionDisabled = status.status === 'loading';
+                const isActionDisabled = status.status === 'loading' || status.status === 'unloading';
 
                 return (
                   <div key={modelName} className="model-item">

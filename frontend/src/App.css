@@ -485,6 +485,18 @@ body {
   background-color: rgba(100, 100, 100, 0.1);
 }
 
+.status-unloading {
+  color: var(--text-secondary);
+  background-color: rgba(150, 150, 150, 0.1);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.status-insufficient_gpu_ram {
+  color: var(--error);
+  background-color: rgba(239, 68, 68, 0.15);
+  border: 1px solid var(--error);
+}
+
 .download-status {
   padding: 2px 8px;
   border-radius: 4px;
