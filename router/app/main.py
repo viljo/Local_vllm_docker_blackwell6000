@@ -578,12 +578,23 @@ async def get_models_status(api_key: str = Depends(verify_api_key)):
         container_status["description"] = metadata.get("description")
 
         # Check if model is downloaded
+        # Logic: If container is running or loading, model MUST be downloaded
+        # Only check filesystem for stopped/failed containers
         hf_path = metadata.get("hf_path")
         if hf_path:
-            download_info = await check_model_downloaded(hf_path)
-            container_status["downloaded"] = download_info["downloaded"]
-            container_status["downloading"] = download_info["downloading"]
-            container_status["downloaded_size"] = download_info["size"]
+            if container_status["status"] in ["running", "loading"]:
+                # Model must be downloaded if it's running or loading
+                container_status["downloaded"] = True
+                container_status["downloading"] = False
+                # Still get size info
+                download_info = await check_model_downloaded(hf_path)
+                container_status["downloaded_size"] = download_info["size"]
+            else:
+                # Check actual download status for stopped/failed containers
+                download_info = await check_model_downloaded(hf_path)
+                container_status["downloaded"] = download_info["downloaded"]
+                container_status["downloading"] = download_info["downloading"]
+                container_status["downloaded_size"] = download_info["size"]
 
         # Check backend health if running (but not loading)
         if container_status["status"] == "running":
