@@ -469,8 +469,8 @@ async def run_docker_command(command: List[str]) -> tuple[bool, str]:
 
 async def check_model_downloaded(hf_path: str) -> Dict[str, Any]:
     """Check if a HuggingFace model is downloaded"""
-    # Check in the models directory
-    model_dir = f"/models/models--{hf_path.replace('/', '--')}"
+    # Check in the models/hub directory where HuggingFace caches models
+    model_dir = f"/models/hub/models--{hf_path.replace('/', '--')}"
     success, output = await run_docker_command([
         "docker", "exec", "vllm-router", "sh", "-c", f"[ -d '{model_dir}' ] && echo 'true' || echo 'false'"
     ])
