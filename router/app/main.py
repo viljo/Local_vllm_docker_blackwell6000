@@ -425,6 +425,30 @@ CONTAINER_NAMES = {
     "mistral-7b-v0.1": "vllm-general",
 }
 
+# Model metadata (sizes in GB, HuggingFace paths)
+MODEL_METADATA = {
+    "gpt-oss-120b": {
+        "size_gb": 80,
+        "hf_path": "openai/gpt-oss-120b",
+        "description": "OpenAI GPT-OSS 120B - High reasoning model"
+    },
+    "gpt-oss-20b": {
+        "size_gb": 16,
+        "hf_path": "openai/gpt-oss-20b",
+        "description": "OpenAI GPT-OSS 20B - Edge-optimized model"
+    },
+    "deepseek-coder-33b-instruct": {
+        "size_gb": 19,
+        "hf_path": "TheBloke/deepseek-coder-33B-instruct-AWQ",
+        "description": "DeepSeek Coder 33B - Python specialist"
+    },
+    "mistral-7b-v0.1": {
+        "size_gb": 4,
+        "hf_path": "TheBloke/Mistral-7B-v0.1-AWQ",
+        "description": "Mistral 7B - General purpose"
+    },
+}
+
 async def run_docker_command(command: List[str]) -> tuple[bool, str]:
     """Execute docker command asynchronously"""
     try:
@@ -443,8 +467,31 @@ async def run_docker_command(command: List[str]) -> tuple[bool, str]:
         return False, str(e)
 
 
+async def check_model_downloaded(hf_path: str) -> Dict[str, Any]:
+    """Check if a HuggingFace model is downloaded"""
+    # Check in the models directory
+    model_dir = f"/models/models--{hf_path.replace('/', '--')}"
+    success, output = await run_docker_command([
+        "docker", "exec", "vllm-router", "sh", "-c", f"[ -d '{model_dir}' ] && echo 'true' || echo 'false'"
+    ])
+
+    is_downloaded = output.strip() == "true"
+
+    if is_downloaded:
+        # Try to get directory size
+        success, size_output = await run_docker_command([
+            "docker", "exec", "vllm-router", "du", "-sh", model_dir
+        ])
+        if success:
+            size_str = size_output.split()[0] if size_output else "Unknown"
+            return {"downloaded": True, "size": size_str}
+
+    return {"downloaded": is_downloaded, "size": None}
+
+
 async def get_container_status(container_name: str) -> Dict[str, Any]:
     """Get status of a Docker container"""
+    # Get container state
     success, output = await run_docker_command([
         "docker", "inspect", "--format", "{{.State.Status}}", container_name
     ])
@@ -453,23 +500,66 @@ async def get_container_status(container_name: str) -> Dict[str, Any]:
         return {"status": "not_found", "container": container_name}
 
     status = output.strip()
-    return {"status": status, "container": container_name}
+    result = {"status": status, "container": container_name}
+
+    # If starting/restarting, check if it's loading
+    if status == "running":
+        # Check if container just started (less than 60 seconds ago)
+        success, uptime = await run_docker_command([
+            "docker", "inspect", "--format", "{{.State.StartedAt}}", container_name
+        ])
+        if success:
+            from datetime import datetime
+            try:
+                started_at = datetime.fromisoformat(uptime.strip().replace('Z', '+00:00'))
+                uptime_seconds = (datetime.now(started_at.tzinfo) - started_at).total_seconds()
+                if uptime_seconds < 60:
+                    result["status"] = "loading"
+            except:
+                pass
+
+    # Check for failed state
+    if status == "exited":
+        success, exit_code = await run_docker_command([
+            "docker", "inspect", "--format", "{{.State.ExitCode}}", container_name
+        ])
+        if success and exit_code.strip() != "0":
+            result["status"] = "failed"
+            result["exit_code"] = exit_code.strip()
+
+    return result
 
 
 @app.get("/v1/models/status")
 async def get_models_status(api_key: str = Depends(verify_api_key)):
-    """Get status of all model backends"""
+    """Get status of all model backends with download info"""
     statuses = {}
 
     for model_name, container_name in CONTAINER_NAMES.items():
         container_status = await get_container_status(container_name)
 
-        # Check backend health if running
+        # Add model metadata
+        metadata = MODEL_METADATA.get(model_name, {})
+        container_status["size_gb"] = metadata.get("size_gb")
+        container_status["description"] = metadata.get("description")
+
+        # Check if model is downloaded
+        hf_path = metadata.get("hf_path")
+        if hf_path:
+            download_info = await check_model_downloaded(hf_path)
+            container_status["downloaded"] = download_info["downloaded"]
+            container_status["downloaded_size"] = download_info["size"]
+
+        # Check backend health if running (but not loading)
         if container_status["status"] == "running":
             backend_url = MODEL_ROUTING.get(model_name)
             if backend_url:
                 health = await check_backend_health(backend_url)
                 container_status["health"] = health.get("status", "unknown")
+
+                # If health check fails, might still be loading
+                if container_status["health"] != "healthy":
+                    container_status["status"] = "loading"
 
         statuses[model_name] = container_status
 

@@ -178,34 +178,78 @@ function App() {
           <div className="model-manager">
             <h3>Model Management</h3>
             <div className="model-list">
-              {Object.entries(modelStatus).map(([modelName, status]: [string, any]) => (
-                <div key={modelName} className="model-item">
-                  <div className="model-info">
-                    <span className="model-name">{modelName}</span>
-                    <span className={`model-status status-${status.status}`}>
-                      {status.status === 'running' ? '● Running' : '○ Stopped'}
-                      {status.health && ` (${status.health})`}
-                    </span>
+              {Object.entries(modelStatus).map(([modelName, status]: [string, any]) => {
+                const getStatusDisplay = () => {
+                  switch (status.status) {
+                    case 'running':
+                      return { icon: '●', text: 'Running', color: 'running' };
+                    case 'loading':
+                      return { icon: '◐', text: 'Loading...', color: 'loading' };
+                    case 'failed':
+                      return { icon: '✕', text: 'Failed', color: 'failed' };
+                    case 'exited':
+                      return { icon: '○', text: 'Stopped', color: 'stopped' };
+                    default:
+                      return { icon: '○', text: 'Not Found', color: 'not_found' };
+                  }
+                };
+
+                const statusDisplay = getStatusDisplay();
+                const isActionDisabled = status.status === 'loading';
+
+                return (
+                  <div key={modelName} className="model-item">
+                    <div className="model-info">
+                      <div className="model-header">
+                        <span className="model-name">{modelName}</span>
+                        <span className={`model-status status-${statusDisplay.color}`}>
+                          {statusDisplay.icon} {statusDisplay.text}
+                        </span>
+                      </div>
+                      {status.description && (
+                        <span className="model-description">{status.description}</span>
+                      )}
+                      <div className="model-meta">
+                        {status.size_gb && (
+                          <span className="model-size">Size: {status.size_gb} GB</span>
+                        )}
+                        {status.downloaded !== undefined && (
+                          <span className={`download-status ${status.downloaded ? 'downloaded' : 'not-downloaded'}`}>
+                            {status.downloaded ? (
+                              <>
+                                ✓ Downloaded
+                                {status.downloaded_size && ` (${status.downloaded_size})`}
+                              </>
+                            ) : (
+                              '⚠ Not Downloaded'
+                            )}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="model-actions">
+                      {status.status === 'running' || status.status === 'loading' ? (
+                        <button
+                          className="stop-model-btn"
+                          onClick={() => handleStopModel(modelName)}
+                          disabled={isActionDisabled}
+                        >
+                          Stop
+                        </button>
+                      ) : (
+                        <button
+                          className="start-model-btn"
+                          onClick={() => handleStartModel(modelName)}
+                          disabled={isActionDisabled || !status.downloaded}
+                          title={!status.downloaded ? 'Model not downloaded' : ''}
+                        >
+                          Start
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  <div className="model-actions">
-                    {status.status === 'running' ? (
-                      <button
-                        className="stop-model-btn"
-                        onClick={() => handleStopModel(modelName)}
-                      >
-                        Stop
-                      </button>
-                    ) : (
-                      <button
-                        className="start-model-btn"
-                        onClick={() => handleStartModel(modelName)}
-                      >
-                        Start
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
