@@ -23,6 +23,7 @@ function App() {
   const [input, setInput] = useState('');
   const [modelStatus, setModelStatus] = useState<Record<string, any>>({});
   const [showModelManager, setShowModelManager] = useState(false);
+  const [unloadingModels, setUnloadingModels] = useState<Set<string>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const currentConv =
@@ -94,12 +95,27 @@ function App() {
 
   const handleStopModel = async (modelName: string) => {
     try {
+      // Immediately mark as unloading
+      setUnloadingModels(prev => new Set(prev).add(modelName));
+
       await stopModel(modelName);
-      // Refresh status
+
+      // Refresh status and clear unloading state
       const status = await getModelsStatus();
       setModelStatus(status);
+      setUnloadingModels(prev => {
+        const next = new Set(prev);
+        next.delete(modelName);
+        return next;
+      });
     } catch (error) {
       console.error('Failed to stop model:', error);
+      // Clear unloading state on error
+      setUnloadingModels(prev => {
+        const next = new Set(prev);
+        next.delete(modelName);
+        return next;
+      });
     }
   };
 
@@ -180,6 +196,11 @@ function App() {
             <div className="model-list">
               {Object.entries(modelStatus).map(([modelName, status]: [string, any]) => {
                 const getStatusDisplay = () => {
+                  // Check client-side unloading state first
+                  if (unloadingModels.has(modelName)) {
+                    return { icon: '◑', text: 'Unloading model', color: 'unloading' };
+                  }
+
                   switch (status.status) {
                     case 'running':
                       return { icon: '●', text: 'Running', color: 'running' };
@@ -199,7 +220,7 @@ function App() {
                 };
 
                 const statusDisplay = getStatusDisplay();
-                const isActionDisabled = status.status === 'loading' || status.status === 'unloading';
+                const isActionDisabled = status.status === 'loading' || status.status === 'unloading' || unloadingModels.has(modelName);
 
                 return (
                   <div key={modelName} className="model-item">
