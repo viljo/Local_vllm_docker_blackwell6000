@@ -24,6 +24,7 @@ function App() {
   const [modelStatus, setModelStatus] = useState<Record<string, any>>({});
   const [showModelManager, setShowModelManager] = useState(false);
   const [unloadingModels, setUnloadingModels] = useState<Set<string>>(new Set());
+  const [loadingModels, setLoadingModels] = useState<Set<string>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const currentConv =
@@ -82,14 +83,27 @@ function App() {
 
   const handleStartModel = async (modelName: string) => {
     try {
+      // Immediately mark as loading
+      setLoadingModels(prev => new Set(prev).add(modelName));
+
       await startModel(modelName);
-      // Refresh status after a short delay
-      setTimeout(async () => {
-        const status = await getModelsStatus();
-        setModelStatus(status);
-      }, 2000);
+
+      // Refresh status and clear loading state
+      const status = await getModelsStatus();
+      setModelStatus(status);
+      setLoadingModels(prev => {
+        const next = new Set(prev);
+        next.delete(modelName);
+        return next;
+      });
     } catch (error) {
       console.error('Failed to start model:', error);
+      // Clear loading state on error
+      setLoadingModels(prev => {
+        const next = new Set(prev);
+        next.delete(modelName);
+        return next;
+      });
     }
   };
 
@@ -196,7 +210,10 @@ function App() {
             <div className="model-list">
               {Object.entries(modelStatus).map(([modelName, status]: [string, any]) => {
                 const getStatusDisplay = () => {
-                  // Check client-side unloading state first
+                  // Check client-side loading/unloading state first
+                  if (loadingModels.has(modelName)) {
+                    return { icon: '◐', text: 'Loading into GPU-mem', color: 'loading' };
+                  }
                   if (unloadingModels.has(modelName)) {
                     return { icon: '◑', text: 'Unloading model', color: 'unloading' };
                   }
@@ -218,7 +235,7 @@ function App() {
                 };
 
                 const statusDisplay = getStatusDisplay();
-                const isActionDisabled = status.status === 'loading' || unloadingModels.has(modelName);
+                const isActionDisabled = status.status === 'loading' || loadingModels.has(modelName) || unloadingModels.has(modelName);
 
                 return (
                   <div key={modelName} className="model-item">
