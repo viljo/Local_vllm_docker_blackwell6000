@@ -237,10 +237,19 @@ function App() {
                           <span className="model-size">Size: {status.size_gb} GB</span>
                         )}
                         {status.downloaded !== undefined && (
-                          <span className={`download-status ${status.downloaded ? 'downloaded' : 'not-downloaded'}`}>
+                          <span className={`download-status ${
+                            status.downloaded ? 'downloaded' :
+                            status.downloading ? 'downloading' :
+                            'not-downloaded'
+                          }`}>
                             {status.downloaded ? (
                               <>
                                 ✓ Downloaded
+                                {status.downloaded_size && ` (${status.downloaded_size})`}
+                              </>
+                            ) : status.downloading ? (
+                              <>
+                                ⏳ Downloading
                                 {status.downloaded_size && ` (${status.downloaded_size})`}
                               </>
                             ) : (

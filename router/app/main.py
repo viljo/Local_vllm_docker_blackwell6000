@@ -468,25 +468,49 @@ async def run_docker_command(command: List[str]) -> tuple[bool, str]:
 
 
 async def check_model_downloaded(hf_path: str) -> Dict[str, Any]:
-    """Check if a HuggingFace model is downloaded"""
+    """Check if a HuggingFace model is fully downloaded"""
     # Check in the models/hub directory where HuggingFace caches models
     model_dir = f"/models/hub/models--{hf_path.replace('/', '--')}"
     success, output = await run_docker_command([
         "docker", "exec", "vllm-router", "sh", "-c", f"[ -d '{model_dir}' ] && echo 'true' || echo 'false'"
     ])
 
-    is_downloaded = output.strip() == "true"
+    if output.strip() != "true":
+        return {"downloaded": False, "downloading": False, "size": None}
 
-    if is_downloaded:
-        # Try to get directory size
-        success, size_output = await run_docker_command([
-            "docker", "exec", "vllm-router", "du", "-sh", model_dir
-        ])
-        if success:
-            size_str = size_output.split()[0] if size_output else "Unknown"
-            return {"downloaded": True, "size": size_str}
+    # Check if download is complete by looking at .no_exist directory
+    # If .no_exist has files, download is incomplete
+    success, no_exist_count = await run_docker_command([
+        "docker", "exec", "vllm-router", "sh", "-c",
+        f"find '{model_dir}/.no_exist' -type f 2>/dev/null | wc -l"
+    ])
 
-    return {"downloaded": is_downloaded, "size": None}
+    is_downloading = False
+    is_fully_downloaded = False
+
+    if success:
+        incomplete_files = int(no_exist_count.strip()) if no_exist_count.strip().isdigit() else 0
+        if incomplete_files > 0:
+            is_downloading = True  # Download in progress
+            is_fully_downloaded = False
+        else:
+            is_downloading = False
+            is_fully_downloaded = True  # Download complete
+    else:
+        # If .no_exist doesn't exist at all, assume download is complete
+        is_fully_downloaded = True
+
+    # Get directory size
+    success, size_output = await run_docker_command([
+        "docker", "exec", "vllm-router", "du", "-sh", model_dir
+    ])
+    size_str = size_output.split()[0] if success and size_output else None
+
+    return {
+        "downloaded": is_fully_downloaded,
+        "downloading": is_downloading,
+        "size": size_str
+    }
 
 
 async def get_container_status(container_name: str) -> Dict[str, Any]:
@@ -558,6 +582,7 @@ async def get_models_status(api_key: str = Depends(verify_api_key)):
         if hf_path:
             download_info = await check_model_downloaded(hf_path)
             container_status["downloaded"] = download_info["downloaded"]
+            container_status["downloading"] = download_info["downloading"]
             container_status["downloaded_size"] = download_info["size"]
 
         # Check backend health if running (but not loading)
