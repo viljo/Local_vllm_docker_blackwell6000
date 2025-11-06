@@ -184,7 +184,7 @@ function App() {
                     case 'running':
                       return { icon: '●', text: 'Running', color: 'running' };
                     case 'loading':
-                      return { icon: '◐', text: 'Loading...', color: 'loading' };
+                      return { icon: '◐', text: 'Loading into GPU-mem', color: 'loading' };
                     case 'failed':
                       return { icon: '✕', text: 'Failed', color: 'failed' };
                     case 'exited':
