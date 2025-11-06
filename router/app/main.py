@@ -521,20 +521,6 @@ async def get_container_status(container_name: str) -> Dict[str, Any]:
 
     # Check for exited/stopped state
     if status == "exited":
-        # Get exit time to detect if recently stopped (unloading)
-        success, finished_at = await run_docker_command([
-            "docker", "inspect", "--format", "{{.State.FinishedAt}}", container_name
-        ])
-        if success:
-            try:
-                finished = datetime.fromisoformat(finished_at.strip().replace('Z', '+00:00'))
-                seconds_since_exit = (datetime.now(finished.tzinfo) - finished).total_seconds()
-                # If stopped less than 10 seconds ago, show as unloading
-                if seconds_since_exit < 10:
-                    result["status"] = "unloading"
-            except:
-                pass
-
         # Check exit code for failure
         success, exit_code = await run_docker_command([
             "docker", "inspect", "--format", "{{.State.ExitCode}}", container_name
