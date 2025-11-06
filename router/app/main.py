@@ -523,20 +523,26 @@ async def get_container_status(container_name: str) -> Dict[str, Any]:
     ])
 
     if not success:
-        return {"status": "not_found", "container": container_name}
+        return {"status": "not_found", "container": container_name, "ever_started": False}
 
     status = output.strip()
     result = {"status": status, "container": container_name}
 
+    # Check if container has ever been started (StartedAt != 0001-01-01)
+    success, started_at_str = await run_docker_command([
+        "docker", "inspect", "--format", "{{.State.StartedAt}}", container_name
+    ])
+    ever_started = False
+    if success and started_at_str.strip() and not started_at_str.startswith("0001-01-01"):
+        ever_started = True
+    result["ever_started"] = ever_started
+
     # If starting/restarting, check if it's loading
     if status == "running":
         # Check if container just started (less than 60 seconds ago)
-        success, uptime = await run_docker_command([
-            "docker", "inspect", "--format", "{{.State.StartedAt}}", container_name
-        ])
-        if success:
+        if success and started_at_str:
             try:
-                started_at = datetime.fromisoformat(uptime.strip().replace('Z', '+00:00'))
+                started_at = datetime.fromisoformat(started_at_str.strip().replace('Z', '+00:00'))
                 uptime_seconds = (datetime.now(started_at.tzinfo) - started_at).total_seconds()
                 if uptime_seconds < 60:
                     result["status"] = "loading"
@@ -578,19 +584,21 @@ async def get_models_status(api_key: str = Depends(verify_api_key)):
         container_status["description"] = metadata.get("description")
 
         # Check if model is downloaded
-        # Logic: If container is running or loading, model MUST be downloaded
-        # Only check filesystem for stopped/failed containers
+        # Logic:
+        # 1. If container is running or loading → model MUST be downloaded
+        # 2. If container has EVER started → model MUST be downloaded (can't run without files)
+        # 3. Otherwise → check filesystem for actual download status
         hf_path = metadata.get("hf_path")
         if hf_path:
-            if container_status["status"] in ["running", "loading"]:
-                # Model must be downloaded if it's running or loading
+            if container_status["status"] in ["running", "loading"] or container_status.get("ever_started", False):
+                # Model must be downloaded if it's running, loading, or has ever run
                 container_status["downloaded"] = True
                 container_status["downloading"] = False
                 # Still get size info
                 download_info = await check_model_downloaded(hf_path)
                 container_status["downloaded_size"] = download_info["size"]
             else:
-                # Check actual download status for stopped/failed containers
+                # Check actual download status for containers that have never started
                 download_info = await check_model_downloaded(hf_path)
                 container_status["downloaded"] = download_info["downloaded"]
                 container_status["downloading"] = download_info["downloading"]
