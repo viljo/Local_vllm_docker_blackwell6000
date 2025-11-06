@@ -51,9 +51,22 @@ function App() {
     };
 
     fetchData();
-    // Refresh status every 30 seconds
+    // Refresh models and status every 30 seconds
     const interval = setInterval(async () => {
-      const status = await getModelsStatus();
+      const [fetchedModels, status] = await Promise.all([
+        fetchModels(),
+        getModelsStatus(),
+      ]);
+
+      if (fetchedModels.length > 0) {
+        setModels(
+          fetchedModels.map((m: any) => ({
+            id: m.id,
+            name: m.id,
+            status: m.status || 'ready',
+          }))
+        );
+      }
       setModelStatus(status);
     }, 30000);
 
@@ -88,8 +101,21 @@ function App() {
 
       await startModel(modelName);
 
-      // Refresh status and clear loading state
-      const status = await getModelsStatus();
+      // Refresh models and status, then clear loading state
+      const [fetchedModels, status] = await Promise.all([
+        fetchModels(),
+        getModelsStatus(),
+      ]);
+
+      if (fetchedModels.length > 0) {
+        setModels(
+          fetchedModels.map((m: any) => ({
+            id: m.id,
+            name: m.id,
+            status: m.status || 'ready',
+          }))
+        );
+      }
       setModelStatus(status);
       setLoadingModels(prev => {
         const next = new Set(prev);
@@ -114,8 +140,21 @@ function App() {
 
       await stopModel(modelName);
 
-      // Refresh status and clear unloading state
-      const status = await getModelsStatus();
+      // Refresh models and status, then clear unloading state
+      const [fetchedModels, status] = await Promise.all([
+        fetchModels(),
+        getModelsStatus(),
+      ]);
+
+      if (fetchedModels.length > 0) {
+        setModels(
+          fetchedModels.map((m: any) => ({
+            id: m.id,
+            name: m.id,
+            status: m.status || 'ready',
+          }))
+        );
+      }
       setModelStatus(status);
       setUnloadingModels(prev => {
         const next = new Set(prev);
