@@ -14,6 +14,8 @@
   --accent: #10a37f;
   --accent-hover: #0d8c6f;
   --error: #ef4444;
+  --success: #22c55e;
+  --warning: #f59e0b;
 }
 
 body {
@@ -366,4 +368,110 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--border-color);
+}
+
+/* Model Manager */
+.model-manager-btn {
+  padding: 8px 16px;
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 14px;
+  margin-left: 10px;
+  transition: background-color 0.2s;
+}
+
+.model-manager-btn:hover {
+  background-color: var(--bg-secondary);
+}
+
+.model-manager {
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 20px;
+  margin: 0 20px 20px 20px;
+}
+
+.model-manager h3 {
+  margin: 0 0 15px 0;
+  font-size: 18px;
+  color: var(--text-primary);
+}
+
+.model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.model-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+}
+
+.model-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.model-name {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.model-status {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.status-running {
+  color: var(--success);
+}
+
+.status-exited, .status-not_found {
+  color: var(--text-secondary);
+}
+
+.model-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.start-model-btn,
+.stop-model-btn {
+  padding: 6px 16px;
+  border-radius: 6px;
+  border: none;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.start-model-btn {
+  background-color: var(--success);
+  color: white;
+}
+
+.start-model-btn:hover {
+  opacity: 0.9;
+}
+
+.stop-model-btn {
+  background-color: var(--error);
+  color: white;
+}
+
+.stop-model-btn:hover {
+  opacity: 0.9;
 }

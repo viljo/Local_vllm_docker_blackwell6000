@@ -19,16 +19,23 @@ function App() {
     clearCurrentConversation,
   } = useChatStore();
 
-  const { sendMessage, fetchModels } = useChat();
+  const { sendMessage, fetchModels, getModelsStatus, startModel, stopModel } = useChat();
   const [input, setInput] = useState('');
+  const [modelStatus, setModelStatus] = useState<Record<string, any>>({});
+  const [showModelManager, setShowModelManager] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const currentConv =
     conversations.find((c) => c.id === currentConversationId) || conversations[0];
 
-  // Fetch models on mount
+  // Fetch models and status on mount
   useEffect(() => {
-    fetchModels().then((fetchedModels) => {
+    const fetchData = async () => {
+      const [fetchedModels, status] = await Promise.all([
+        fetchModels(),
+        getModelsStatus(),
+      ]);
+
       if (fetchedModels.length > 0) {
         setModels(
           fetchedModels.map((m: any) => ({
@@ -38,8 +45,18 @@ function App() {
           }))
         );
       }
-    });
-  }, [fetchModels, setModels]);
+      setModelStatus(status);
+    };
+
+    fetchData();
+    // Refresh status every 30 seconds
+    const interval = setInterval(async () => {
+      const status = await getModelsStatus();
+      setModelStatus(status);
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [fetchModels, getModelsStatus, setModels]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -59,6 +76,30 @@ function App() {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSubmit(e);
+    }
+  };
+
+  const handleStartModel = async (modelName: string) => {
+    try {
+      await startModel(modelName);
+      // Refresh status after a short delay
+      setTimeout(async () => {
+        const status = await getModelsStatus();
+        setModelStatus(status);
+      }, 2000);
+    } catch (error) {
+      console.error('Failed to start model:', error);
+    }
+  };
+
+  const handleStopModel = async (modelName: string) => {
+    try {
+      await stopModel(modelName);
+      // Refresh status
+      const status = await getModelsStatus();
+      setModelStatus(status);
+    } catch (error) {
+      console.error('Failed to stop model:', error);
     }
   };
 
@@ -123,7 +164,51 @@ function App() {
           <button className="clear-btn" onClick={clearCurrentConversation}>
             Clear Chat
           </button>
+
+          <button
+            className="model-manager-btn"
+            onClick={() => setShowModelManager(!showModelManager)}
+          >
+            Model Manager {showModelManager ? '▼' : '▶'}
+          </button>
         </div>
+
+        {/* Model Manager Panel */}
+        {showModelManager && (
+          <div className="model-manager">
+            <h3>Model Management</h3>
+            <div className="model-list">
+              {Object.entries(modelStatus).map(([modelName, status]: [string, any]) => (
+                <div key={modelName} className="model-item">
+                  <div className="model-info">
+                    <span className="model-name">{modelName}</span>
+                    <span className={`model-status status-${status.status}`}>
+                      {status.status === 'running' ? '● Running' : '○ Stopped'}
+                      {status.health && ` (${status.health})`}
+                    </span>
+                  </div>
+                  <div className="model-actions">
+                    {status.status === 'running' ? (
+                      <button
+                        className="stop-model-btn"
+                        onClick={() => handleStopModel(modelName)}
+                      >
+                        Stop
+                      </button>
+                    ) : (
+                      <button
+                        className="start-model-btn"
+                        onClick={() => handleStartModel(modelName)}
+                      >
+                        Start
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="messages-container">
           {currentConv?.messages.length === 0 ? (

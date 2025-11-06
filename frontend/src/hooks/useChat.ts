@@ -129,5 +129,50 @@ export const useChat = () => {
     }
   }, []);
 
-  return { sendMessage, fetchModels };
+  const getModelsStatus = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/models/status`, {
+        headers: {
+          'Authorization': `Bearer ${API_KEY}`,
+        },
+      });
+      const data = await response.json();
+      return data.models || {};
+    } catch (error) {
+      console.error('Error fetching model status:', error);
+      return {};
+    }
+  }, []);
+
+  const startModel = useCallback(async (modelName: string) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/models/${modelName}/start`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${API_KEY}`,
+        },
+      });
+      return await response.json();
+    } catch (error) {
+      console.error('Error starting model:', error);
+      throw error;
+    }
+  }, []);
+
+  const stopModel = useCallback(async (modelName: string) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/models/${modelName}/stop`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${API_KEY}`,
+        },
+      });
+      return await response.json();
+    } catch (error) {
+      console.error('Error stopping model:', error);
+      throw error;
+    }
+  }, []);
+
+  return { sendMessage, fetchModels, getModelsStatus, startModel, stopModel };
 };

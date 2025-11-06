@@ -6,6 +6,8 @@ import os
 import logging
 import time
 import uuid
+import subprocess
+import asyncio
 from typing import Dict, Any, Optional, List
 from contextlib import asynccontextmanager
 
@@ -27,6 +29,8 @@ logger = logging.getLogger(__name__)
 API_KEY = os.getenv("API_KEY", "sk-local-dev-key")
 CODER_BACKEND_URL = os.getenv("CODER_BACKEND_URL", "http://vllm-coder:8000")
 GENERAL_BACKEND_URL = os.getenv("GENERAL_BACKEND_URL", "http://vllm-general:8000")
+GPT_OSS_120B_BACKEND_URL = os.getenv("GPT_OSS_120B_BACKEND_URL", "http://vllm-gpt-oss-120b:8000")
+GPT_OSS_20B_BACKEND_URL = os.getenv("GPT_OSS_20B_BACKEND_URL", "http://vllm-gpt-oss-20b:8000")
 
 # Model routing configuration
 MODEL_ROUTING = {
@@ -34,6 +38,8 @@ MODEL_ROUTING = {
     "deepseek-coder-33B-instruct": CODER_BACKEND_URL,  # Case variation
     "mistral-7b-v0.1": GENERAL_BACKEND_URL,
     "qwen-2.5-14b-instruct": GENERAL_BACKEND_URL,
+    "gpt-oss-120b": GPT_OSS_120B_BACKEND_URL,
+    "gpt-oss-20b": GPT_OSS_20B_BACKEND_URL,
 }
 
 # Model name mapping (friendly name -> backend model name)
@@ -42,6 +48,8 @@ MODEL_NAME_MAPPING = {
     "deepseek-coder-33B-instruct": "TheBloke/deepseek-coder-33B-instruct-AWQ",
     "mistral-7b-v0.1": "TheBloke/Mistral-7B-v0.1-AWQ",
     "qwen-2.5-14b-instruct": "TheBloke/Qwen2.5-14B-Instruct-AWQ",
+    "gpt-oss-120b": "openai/gpt-oss-120b",
+    "gpt-oss-20b": "openai/gpt-oss-20b",
 }
 
 # HTTP client for backend requests
@@ -403,6 +411,162 @@ async def completions(
 
     # Use chat completions endpoint
     return await chat_completions(chat_request, raw_request, api_key)
+
+
+# ============================================================================
+# Model Management Endpoints (Dynamic Loading)
+# ============================================================================
+
+# Container name mapping
+CONTAINER_NAMES = {
+    "gpt-oss-120b": "vllm-gpt-oss-120b",
+    "gpt-oss-20b": "vllm-gpt-oss-20b",
+    "deepseek-coder-33b-instruct": "vllm-coder",
+    "mistral-7b-v0.1": "vllm-general",
+}
+
+async def run_docker_command(command: List[str]) -> tuple[bool, str]:
+    """Execute docker command asynchronously"""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+
+        success = process.returncode == 0
+        output = stdout.decode() if success else stderr.decode()
+        return success, output
+    except Exception as e:
+        logger.error(f"Docker command failed: {e}")
+        return False, str(e)
+
+
+async def get_container_status(container_name: str) -> Dict[str, Any]:
+    """Get status of a Docker container"""
+    success, output = await run_docker_command([
+        "docker", "inspect", "--format", "{{.State.Status}}", container_name
+    ])
+
+    if not success:
+        return {"status": "not_found", "container": container_name}
+
+    status = output.strip()
+    return {"status": status, "container": container_name}
+
+
+@app.get("/v1/models/status")
+async def get_models_status(api_key: str = Depends(verify_api_key)):
+    """Get status of all model backends"""
+    statuses = {}
+
+    for model_name, container_name in CONTAINER_NAMES.items():
+        container_status = await get_container_status(container_name)
+
+        # Check backend health if running
+        if container_status["status"] == "running":
+            backend_url = MODEL_ROUTING.get(model_name)
+            if backend_url:
+                health = await check_backend_health(backend_url)
+                container_status["health"] = health.get("status", "unknown")
+
+        statuses[model_name] = container_status
+
+    return {"models": statuses}
+
+
+@app.post("/v1/models/{model_name}/start")
+async def start_model(model_name: str, api_key: str = Depends(verify_api_key)):
+    """Start a model backend container"""
+    if model_name not in CONTAINER_NAMES:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Model '{model_name}' not found. Available: {list(CONTAINER_NAMES.keys())}"
+        )
+
+    container_name = CONTAINER_NAMES[model_name]
+
+    # Check current status
+    status = await get_container_status(container_name)
+    if status["status"] == "running":
+        return {"message": f"Model '{model_name}' is already running", "status": "running"}
+
+    # Start the container
+    logger.info(f"Starting model '{model_name}' (container: {container_name})")
+    success, output = await run_docker_command(["docker", "start", container_name])
+
+    if not success:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to start model '{model_name}': {output}"
+        )
+
+    return {
+        "message": f"Model '{model_name}' started successfully",
+        "status": "starting",
+        "container": container_name
+    }
+
+
+@app.post("/v1/models/{model_name}/stop")
+async def stop_model(model_name: str, api_key: str = Depends(verify_api_key)):
+    """Stop a model backend container"""
+    if model_name not in CONTAINER_NAMES:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Model '{model_name}' not found. Available: {list(CONTAINER_NAMES.keys())}"
+        )
+
+    container_name = CONTAINER_NAMES[model_name]
+
+    # Check current status
+    status = await get_container_status(container_name)
+    if status["status"] in ["exited", "not_found"]:
+        return {"message": f"Model '{model_name}' is not running", "status": status["status"]}
+
+    # Stop the container
+    logger.info(f"Stopping model '{model_name}' (container: {container_name})")
+    success, output = await run_docker_command(["docker", "stop", container_name])
+
+    if not success:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to stop model '{model_name}': {output}"
+        )
+
+    return {
+        "message": f"Model '{model_name}' stopped successfully",
+        "status": "stopped",
+        "container": container_name
+    }
+
+
+@app.post("/v1/models/{model_name}/restart")
+async def restart_model(model_name: str, api_key: str = Depends(verify_api_key)):
+    """Restart a model backend container"""
+    if model_name not in CONTAINER_NAMES:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Model '{model_name}' not found. Available: {list(CONTAINER_NAMES.keys())}"
+        )
+
+    container_name = CONTAINER_NAMES[model_name]
+
+    logger.info(f"Restarting model '{model_name}' (container: {container_name})")
+    success, output = await run_docker_command(["docker", "restart", container_name])
+
+    if not success:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to restart model '{model_name}': {output}"
+        )
+
+    return {
+        "message": f"Model '{model_name}' restarted successfully",
+        "status": "restarting",
+        "container": container_name
+    }
 
 
 if __name__ == "__main__":

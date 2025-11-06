@@ -81,6 +81,96 @@ services:
     networks:
       - llm-network
 
+  # GPT-OSS 120B Model Backend (OpenAI Open Source)
+  vllm-gpt-oss-120b:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-gpt-oss-120b
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      HF_HOME: /models
+    volumes:
+      - ./models:/models
+      - ./data:/data
+    ports:
+      - "${GPT_OSS_120B_PORT:-8002}:8000"
+      - "9092:9090"  # Prometheus metrics
+    command:
+      - --model=${GPT_OSS_120B_MODEL:-openai/gpt-oss-120b}
+      - --port=8000
+      - --host=0.0.0.0
+      - --api-key=${API_KEY}
+      - --gpu-memory-utilization=${GPT_OSS_120B_GPU_MEMORY:-0.85}
+      - --max-model-len=${GPT_OSS_120B_MAX_MODEL_LEN:-8192}
+      - --max-num-seqs=${GPT_OSS_120B_MAX_SEQ:-256}
+      - --max-num-batched-tokens=${GPT_OSS_120B_MAX_BATCHED_TOKENS:-16384}
+      - --enable-prefix-caching
+      - --trust-remote-code
+      - --tool-call-parser=openai
+      - --enable-auto-tool-choice
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 900s  # 15 minutes for large model loading
+    restart: "no"  # Manual start for dynamic loading
+    networks:
+      - llm-network
+    profiles:
+      - gpt-oss-120b
+
+  # GPT-OSS 20B Model Backend (OpenAI Open Source)
+  vllm-gpt-oss-20b:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-gpt-oss-20b
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      HF_HOME: /models
+    volumes:
+      - ./models:/models
+      - ./data:/data
+    ports:
+      - "${GPT_OSS_20B_PORT:-8003}:8000"
+      - "9093:9090"  # Prometheus metrics
+    command:
+      - --model=${GPT_OSS_20B_MODEL:-openai/gpt-oss-20b}
+      - --port=8000
+      - --host=0.0.0.0
+      - --api-key=${API_KEY}
+      - --gpu-memory-utilization=${GPT_OSS_20B_GPU_MEMORY:-0.20}
+      - --max-model-len=${GPT_OSS_20B_MAX_MODEL_LEN:-8192}
+      - --max-num-seqs=${GPT_OSS_20B_MAX_SEQ:-512}
+      - --max-num-batched-tokens=${GPT_OSS_20B_MAX_BATCHED_TOKENS:-16384}
+      - --enable-prefix-caching
+      - --trust-remote-code
+      - --tool-call-parser=openai
+      - --enable-auto-tool-choice
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 600s  # 10 minutes for model loading
+    restart: "no"  # Manual start for dynamic loading
+    networks:
+      - llm-network
+    profiles:
+      - gpt-oss-20b
+
   # FastAPI Router (Unified Endpoint)
   vllm-router:
     build:
@@ -91,7 +181,11 @@ services:
       API_KEY: ${API_KEY}
       CODER_BACKEND_URL: http://vllm-coder:8000
       GENERAL_BACKEND_URL: http://vllm-general:8000
+      GPT_OSS_120B_BACKEND_URL: http://vllm-gpt-oss-120b:8000
+      GPT_OSS_20B_BACKEND_URL: http://vllm-gpt-oss-20b:8000
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # For model management
     ports:
       - "${ROUTER_PORT:-8080}:8080"
     depends_on:
