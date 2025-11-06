@@ -1,0 +1,118 @@
+openapi: 3.0.3
+info:
+  title: Local LLM Service - Health & Monitoring API
+  description: Health check and metrics endpoints for service monitoring
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
+    description: Router (aggregated health)
+  - url: http://localhost:8000
+    description: vLLM Coder backend
+  - url: http://localhost:8001
+    description: vLLM General backend
+  - url: http://localhost:9090
+    description: Prometheus metrics (vLLM backends)
+
+paths:
+  /health:
+    get:
+      summary: Basic health check
+      description: Returns 200 if service is responding
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: ["healthy"]
+              example:
+                status: "healthy"
+
+  /ready:
+    get:
+      summary: Readiness check
+      description: |
+        Returns 200 when at least one model is loaded and accepting requests.
+        Used by orchestrators to determine when service can handle traffic.
+      operationId: readinessCheck
+      responses:
+        '200':
+          description: At least one model is ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: ["ready"]
+                  models:
+                    type: object
+                    additionalProperties:
+                      type: string
+                      enum: ["loading", "ready", "error"]
+              example:
+                status: "ready"
+                models:
+                  "deepseek-coder-33b-instruct": "ready"
+                  "qwen-2.5-14b-instruct": "loading"
+        '503':
+          description: No models are ready yet
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: ["not_ready"]
+                  models:
+                    type: object
+              example:
+                status: "not_ready"
+                models:
+                  "deepseek-coder-33b-instruct": "loading"
+                  "qwen-2.5-14b-instruct": "loading"
+
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      description: |
+        Exposes vLLM metrics in Prometheus format:
+        - vllm:num_requests_running
+        - vllm:num_requests_waiting
+        - vllm:gpu_cache_usage_perc
+        - vllm:time_to_first_token_seconds
+        - vllm:time_per_output_token_seconds
+      operationId: prometheusMetrics
+      responses:
+        '200':
+          description: Prometheus text format metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: |
+                # HELP vllm:num_requests_running Number of requests currently being processed
+                # TYPE vllm:num_requests_running gauge
+                vllm:num_requests_running{model_name="deepseek-coder-33b-instruct"} 3
+
+                # HELP vllm:num_requests_waiting Number of requests waiting in queue
+                # TYPE vllm:num_requests_waiting gauge
+                vllm:num_requests_waiting{model_name="deepseek-coder-33b-instruct"} 12
+
+                # HELP vllm:gpu_cache_usage_perc GPU KV cache utilization percentage
+                # TYPE vllm:gpu_cache_usage_perc gauge
+                vllm:gpu_cache_usage_perc 67.5
+
+                # HELP vllm:time_to_first_token_seconds Time to first token latency
+                # TYPE vllm:time_to_first_token_seconds histogram
+                vllm:time_to_first_token_seconds_bucket{le="0.1"} 45
+                vllm:time_to_first_token_seconds_bucket{le="0.5"} 320
+                vllm:time_to_first_token_seconds_sum 156.78
+                vllm:time_to_first_token_seconds_count 500

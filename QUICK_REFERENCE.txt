@@ -1,0 +1,224 @@
+================================================================================
+  QUANTIZATION RESEARCH: QUICK REFERENCE CARD
+  96GB VRAM for Concurrent Model Inference
+================================================================================
+
+QUESTION 1: VRAM Requirements for Models
+────────────────────────────────────────
+
+Model                          FP16    GPTQ 4-bit  AWQ 4-bit
+DeepSeek Coder 33B             75 GB   50 GB       50 GB
+Qwen2.5-Coder 32B              73 GB   50 GB       50 GB
+Mistral 7B                     24 GB   20 GB       20 GB
+Qwen2.5 7B                     24 GB   18 GB       18 GB
+Qwen2.5 14B                    42 GB   28 GB       30 GB
+
+FP16 Concurrent (Both models): 94-100 GB ❌ DOESN'T FIT
+4-bit Concurrent (Both models): 68-80 GB  ✓ FITS BUDGET
+
+================================================================================
+QUESTION 2: GPTQ vs AWQ for vLLM
+────────────────────────────────
+
+Metric                  GPTQ        AWQ         Winner
+vLLM Memory             66.44 GB    48.44 GB    AWQ (saves 18 GB)
+Code Accuracy           98.9%       98.9%       Tie
+General Language        Good        Better      AWQ
+Speed                   ~3x FP16    ~3x FP16    Tie
+vLLM Support            Full        Full        Tie
+
+RECOMMENDATION: Use AWQ (better for vLLM memory overhead)
+
+================================================================================
+QUESTION 3: Pre-Quantized Model Repositories
+─────────────────────────────────────────────
+
+CODER MODELS:
+  DeepSeek 33B (AWQ):  TheBloke/deepseek-coder-33B-instruct-AWQ
+  Qwen2.5 32B (AWQ):   Qwen/Qwen2.5-Coder-32B-Instruct-AWQ
+
+GENERAL MODELS:
+  Mistral 7B (AWQ):    TheBloke/Mistral-7B-v0.1-AWQ
+  Qwen2.5 7B:          Qwen/Qwen2.5-7B-Instruct
+  Qwen2.5 14B:         Qwen/Qwen2.5-14B-Instruct
+
+Download:
+  huggingface-cli download TheBloke/deepseek-coder-33B-instruct-AWQ
+  huggingface-cli download TheBloke/Mistral-7B-v0.1-AWQ
+
+================================================================================
+QUESTION 4: Accuracy Loss with 4-bit Quantization
+──────────────────────────────────────────────────
+
+Benchmark       8-bit       4-bit       Practical Impact
+HumanEval       99.9%       98.9%       <1-2 failures/100
+MBPP            99.9%       98.9%       Excellent
+Code Tasks      99%+        98%+        Negligible
+
+VERDICT: 98.9% accuracy recovery = negligible practical impact
+         Acceptable for production code generation
+
+================================================================================
+QUESTION 5: vLLM Memory Optimizations
+──────────────────────────────────────
+
+PagedAttention:
+  - Reduces KV cache waste from 25% to <4%
+  - Automatically enabled in vLLM
+  - Saves ~5-10 GB per model
+
+Continuous Batching:
+  - 23x throughput improvement
+  - Dynamic request scheduling
+  - Enables efficient concurrent models
+
+Configuration:
+  --gpu-memory-utilization 0.88    (88% of GPU, 12% reserved)
+  --max-num-batched-tokens 8192    (balanced batch size)
+  --max-num-seqs 128               (parallel sequences)
+
+================================================================================
+RECOMMENDED CONFIGURATION
+─────────────────────────
+
+Option 1: BEST (Recommended)
+  Coder:   DeepSeek Coder 33B AWQ
+  General: Mistral 7B AWQ
+  VRAM:    ~70 GB used, 26 GB headroom
+  Accuracy: 98.9% recovery
+  Status:  ✓✓✓ OPTIMAL
+
+Option 2: Alternative
+  Coder:   Qwen2.5-Coder 32B AWQ
+  General: Qwen2.5 7B
+  VRAM:    ~68 GB used, 28 GB headroom
+  Accuracy: 98.9% recovery
+  Status:  ✓✓✓ CONSISTENT VENDOR
+
+Option 3: Maximum Quality
+  Coder:   DeepSeek Coder 33B AWQ
+  General: Qwen2.5 14B AWQ
+  VRAM:    ~80 GB used, 16 GB headroom
+  Accuracy: 98.9% recovery
+  Status:  ✓✓ TIGHT (requires tuning)
+
+================================================================================
+DEPLOYMENT COMMANDS (Ready to Copy)
+────────────────────────────────────
+
+1. Install vLLM:
+   pip install vllm
+
+2. Download models:
+   huggingface-cli download TheBloke/deepseek-coder-33B-instruct-AWQ
+   huggingface-cli download TheBloke/Mistral-7B-v0.1-AWQ
+
+3. Terminal 1 - DeepSeek Coder 33B:
+   python -m vllm.entrypoints.api_server \
+     --model TheBloke/deepseek-coder-33B-instruct-AWQ \
+     --quantization awq \
+     --gpu-memory-utilization 0.88 \
+     --max-num-batched-tokens 8192 \
+     --port 8000
+
+4. Terminal 2 - Mistral 7B:
+   python -m vllm.entrypoints.api_server \
+     --model TheBloke/Mistral-7B-v0.1-AWQ \
+     --quantization awq \
+     --gpu-memory-utilization 0.88 \
+     --max-num-batched-tokens 8192 \
+     --port 8001
+
+5. Test:
+   curl http://localhost:8000/v1/models
+   curl http://localhost:8001/v1/models
+
+================================================================================
+TROUBLESHOOTING QUICK REFERENCE
+────────────────────────────────
+
+Problem: CUDA out of memory
+Solution: Reduce --gpu-memory-utilization to 0.85
+          Reduce --max-num-batched-tokens to 6144
+          Reduce --max-num-seqs to 64
+
+Problem: Model loading fails
+Solution: Verify download: du -sh ~/.cache/huggingface/hub/models--*
+          Check vLLM installed: python -c "import vllm; print('OK')"
+
+Problem: Slow inference
+Solution: Check batching config
+          Monitor GPU: watch -n 1 nvidia-smi
+          Check utilization: nvidia-smi -l 1
+
+Problem: Need to free GPU memory
+Solution: Kill servers: pkill -f "api_server"
+          Clear cache: rm -rf ~/.cache/huggingface/hub/
+
+================================================================================
+KEY NUMBERS TO REMEMBER
+───────────────────────
+
+96 GB     Total GPU memory budget
+70 GB     Best config uses ~70 GB (leaves 26 GB headroom)
+68 GB     Alternative uses ~68 GB (leaves 28 GB headroom)
+50 GB     DeepSeek Coder 33B AWQ vLLM memory
+20 GB     Mistral 7B AWQ vLLM memory
+98.9%     Accuracy recovery with 4-bit quantization
+1.1%      Accuracy loss (negligible)
+23x       Throughput improvement with continuous batching
+<4%       KV cache waste with PagedAttention
+0.88      Recommended gpu-memory-utilization
+8192      Recommended max-num-batched-tokens
+128       Recommended max-num-seqs
+
+================================================================================
+DECISION CHECKLIST
+──────────────────
+
+□ Verify GPU has 96GB VRAM
+□ Read QUANTIZATION_EXECUTIVE_SUMMARY.md for context (10 min)
+□ Choose model combination (DeepSeek+Mistral recommended)
+□ Install vLLM: pip install vllm
+□ Download models with huggingface-cli
+□ Start server 1 (DeepSeek Coder 33B AWQ on port 8000)
+□ Start server 2 (Mistral 7B AWQ on port 8001)
+□ Test endpoints with curl
+□ Monitor GPU memory during load
+□ Adjust tuning parameters if needed
+□ Deploy to production with process manager
+
+Estimated time to deployment: 2-3 hours
+
+================================================================================
+FULL DOCUMENTATION
+───────────────────
+
+For comprehensive details, see:
+
+  1. QUANTIZATION_EXECUTIVE_SUMMARY.md      Quick answers (10 min read)
+  2. QUANTIZATION_RESEARCH.md               Complete research (30 min read)
+  3. VRAM_CALCULATION_REFERENCE.md          Technical details (15 min read)
+  4. MODEL_COMPARISON_MATRIX.md             Model comparison (15 min read)
+  5. DEPLOYMENT_COMMANDS.md                 Implementation guide (10 min read)
+  6. RESEARCH_INDEX.md                      Document navigation
+
+All files: /home/asvil/git/local_llm_service/
+
+================================================================================
+BOTTOM LINE
+───────────
+
+Q: Will quantization fit in 96GB?
+A: YES - Use AWQ 4-bit (not GPTQ)
+
+Q: Which models?
+A: DeepSeek Coder 33B + Mistral 7B (both AWQ 4-bit)
+
+Q: What accuracy loss?
+A: 1.1% (98.9% recovery) - Negligible for production
+
+Q: Ready to deploy?
+A: Yes - Follow DEPLOYMENT_COMMANDS.md (2-3 hours)
+
+================================================================================

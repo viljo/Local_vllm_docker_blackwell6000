@@ -1,0 +1,135 @@
+services:
+  # Python Coding Model Backend (DeepSeek Coder 33B)
+  vllm-coder:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-coder
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      HF_HOME: /models
+    volumes:
+      - ./models:/models
+      - ./data:/data
+    ports:
+      - "${CODER_BACKEND_PORT:-8000}:8000"
+      - "9090:9090"  # Prometheus metrics
+    command:
+      - --model=${PYTHON_MODEL:-TheBloke/deepseek-coder-33B-instruct-AWQ}
+      - --port=8000
+      - --host=0.0.0.0
+      - --api-key=${API_KEY}
+      - --gpu-memory-utilization=${CODER_GPU_MEMORY:-0.45}
+      - --max-model-len=${CODER_MAX_MODEL_LEN:-4096}
+      - --max-num-seqs=${CODER_MAX_SEQ:-64}
+      - --max-num-batched-tokens=${CODER_MAX_BATCHED_TOKENS:-8192}
+      - --enable-prefix-caching
+      - --trust-remote-code
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 600s  # 10 minutes for model loading
+    restart: unless-stopped
+    networks:
+      - llm-network
+
+  # General Purpose Model Backend (Mistral 7B / Qwen 14B)
+  vllm-general:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-general
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      HF_HOME: /models
+    volumes:
+      - ./models:/models
+      - ./data:/data
+    ports:
+      - "${GENERAL_BACKEND_PORT:-8001}:8000"
+      - "9091:9090"  # Prometheus metrics
+    command:
+      - --model=${GENERAL_MODEL:-TheBloke/Mistral-7B-v0.1-AWQ}
+      - --port=8000
+      - --host=0.0.0.0
+      - --api-key=${API_KEY}
+      - --gpu-memory-utilization=${GENERAL_GPU_MEMORY:-0.40}
+      - --max-model-len=${GENERAL_MAX_MODEL_LEN:-4096}
+      - --max-num-seqs=${GENERAL_MAX_SEQ:-128}
+      - --max-num-batched-tokens=${GENERAL_MAX_BATCHED_TOKENS:-8192}
+      - --enable-prefix-caching
+      - --trust-remote-code
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 600s  # 10 minutes for model loading
+    restart: unless-stopped
+    networks:
+      - llm-network
+
+  # FastAPI Router (Unified Endpoint)
+  vllm-router:
+    build:
+      context: ./router
+      dockerfile: Dockerfile
+    container_name: vllm-router
+    environment:
+      API_KEY: ${API_KEY}
+      CODER_BACKEND_URL: http://vllm-coder:8000
+      GENERAL_BACKEND_URL: http://vllm-general:8000
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "${ROUTER_PORT:-8080}:8080"
+    depends_on:
+      - vllm-coder
+      - vllm-general
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - llm-network
+
+  # WebUI Frontend (React)
+  webui-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Don't set VITE_API_BASE_URL - let it use dynamic hostname detection for remote access
+        VITE_API_KEY: ${API_KEY}
+    container_name: webui-frontend
+    ports:
+      - "${WEBUI_PORT:-3000}:3000"
+    depends_on:
+      - vllm-router
+    restart: unless-stopped
+    networks:
+      - llm-network
+
+networks:
+  llm-network:
+    driver: bridge
+
+volumes:
+  models:
+    driver: local
+  data:
+    driver: local

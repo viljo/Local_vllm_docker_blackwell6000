@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>API Connection Test</title>
+    <style>
+        body { font-family: monospace; padding: 20px; background: #1a1a1a; color: #fff; max-width: 1200px; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; margin: 5px; }
+        #result { margin-top: 20px; padding: 10px; background: #2a2a2a; border: 1px solid #444; white-space: pre-wrap; }
+        .success { color: #0f0; }
+        .error { color: #f00; }
+        .curl-section { margin-top: 30px; padding: 15px; background: #2a2a2a; border: 1px solid #555; }
+        .curl-section h3 { margin-top: 0; color: #4a9eff; }
+        .curl-command { background: #1a1a1a; padding: 10px; border-left: 3px solid #4a9eff; margin: 10px 0; overflow-x: auto; }
+        code { color: #ffa500; }
+        .info { color: #888; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <h1>API Connection Test</h1>
+    <p>Server: <span id="apiUrl"></span></p>
+    <p class="info">API Key: sk-local-2ac9387d659f7131f38d83e5f7bee469</p>
+
+    <div>
+        <button onclick="testModels()">Test /v1/models</button>
+        <button onclick="testChat()">Test Chat Completion</button>
+        <button onclick="testCORS()">Test CORS Preflight</button>
+    </div>
+
+    <div id="result"></div>
+
+    <div class="curl-section">
+        <h3>📋 Test with curl (from terminal):</h3>
+
+        <p><strong>1. Test Models List:</strong></p>
+        <div class="curl-command"><code id="curlModels"></code></div>
+
+        <p><strong>2. Test Chat Completion:</strong></p>
+        <div class="curl-command"><code id="curlChat"></code></div>
+
+        <p><strong>3. Test CORS Headers:</strong></p>
+        <div class="curl-command"><code id="curlCors"></code></div>
+
+        <p class="info">Copy these commands and run them in your terminal to verify the API works outside the browser.</p>
+    </div>
+
+    <script>
+        const hostname = window.location.hostname;
+        const API_BASE_URL = `http://${hostname}:8080/v1`;
+        const API_KEY = 'sk-local-2ac9387d659f7131f38d83e5f7bee469';
+
+        document.getElementById('apiUrl').textContent = API_BASE_URL;
+
+        // Populate curl commands
+        document.getElementById('curlModels').textContent =
+            `curl -s -H "Authorization: Bearer ${API_KEY}" http://${hostname}:8080/v1/models`;
+
+        document.getElementById('curlChat').textContent =
+            `curl -X POST "http://${hostname}:8080/v1/chat/completions" -H "Content-Type: application/json" -H "Authorization: Bearer ${API_KEY}" -d '{"model":"deepseek-coder-33b-instruct","messages":[{"role":"user","content":"Hello"}],"max_tokens":20,"stream":false}'`;
+
+        document.getElementById('curlCors').textContent =
+            `curl -I -X OPTIONS -H "Origin: http://${hostname}:3000" -H "Access-Control-Request-Method: POST" -H "Access-Control-Request-Headers: content-type,authorization" http://${hostname}:8080/v1/chat/completions`;
+
+        function showResult(message, isError = false) {
+            const result = document.getElementById('result');
+            result.className = isError ? 'error' : 'success';
+            result.textContent = message;
+        }
+
+        async function testModels() {
+            showResult('Testing /v1/models...');
+            try {
+                const response = await fetch(`${API_BASE_URL}/models`, {
+                    headers: {
+                        'Authorization': `Bearer ${API_KEY}`
+                    }
+                });
+                const data = await response.json();
+                showResult('Success!\n\n' + JSON.stringify(data, null, 2));
+            } catch (error) {
+                showResult('Error: ' + error.message, true);
+            }
+        }
+
+        async function testChat() {
+            showResult('Testing chat completion...');
+            try {
+                const response = await fetch(`${API_BASE_URL}/chat/completions`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${API_KEY}`
+                    },
+                    body: JSON.stringify({
+                        model: 'deepseek-coder-33b-instruct',
+                        messages: [{ role: 'user', content: 'Say hi' }],
+                        max_tokens: 10,
+                        stream: false
+                    })
+                });
+                const data = await response.json();
+                showResult('Success!\n\n' + JSON.stringify(data, null, 2));
+            } catch (error) {
+                showResult('Error: ' + error.message + '\n\nCheck browser console for more details.', true);
+            }
+        }
+
+        async function testCORS() {
+            showResult('Testing CORS preflight...');
+            try {
+                const response = await fetch(`${API_BASE_URL}/models`, {
+                    method: 'OPTIONS',
+                    headers: {
+                        'Access-Control-Request-Method': 'POST',
+                        'Access-Control-Request-Headers': 'content-type,authorization'
+                    }
+                });
+                const headers = {};
+                response.headers.forEach((value, key) => {
+                    if (key.startsWith('access-control')) {
+                        headers[key] = value;
+                    }
+                });
+                showResult('CORS Headers:\n\n' + JSON.stringify(headers, null, 2));
+            } catch (error) {
+                showResult('Error: ' + error.message, true);
+            }
+        }
+    </script>
+</body>
+</html>

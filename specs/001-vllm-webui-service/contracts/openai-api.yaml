@@ -1,0 +1,399 @@
+openapi: 3.0.3
+info:
+  title: Local LLM Service - OpenAI-Compatible API
+  description: |
+    OpenAI-compatible API for local vLLM inference with model routing.
+    Serves Python coding and general-purpose models via unified endpoint.
+  version: 1.0.0
+  contact:
+    name: Local LLM Service
+servers:
+  - url: http://localhost:8080/v1
+    description: Router endpoint (unified access)
+  - url: http://localhost:8000/v1
+    description: Direct - Python Coder model (DeepSeek Coder 33B)
+  - url: http://localhost:8001/v1
+    description: Direct - General Purpose model (Mistral 7B / Qwen 14B)
+
+security:
+  - bearerAuth: []
+
+paths:
+  /chat/completions:
+    post:
+      summary: Create chat completion
+      description: |
+        Generate AI response for conversation. Supports streaming via SSE.
+        Router automatically selects backend based on `model` parameter.
+      operationId: createChatCompletion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionRequest'
+            examples:
+              streamingRequest:
+                summary: Streaming chat (typical IDE usage)
+                value:
+                  model: "deepseek-coder-33b-instruct"
+                  messages:
+                    - role: "user"
+                      content: "Write a Python function to reverse a string"
+                  stream: true
+                  max_tokens: 512
+                  temperature: 0.7
+              nonStreamingRequest:
+                summary: Non-streaming chat
+                value:
+                  model: "qwen-2.5-14b-instruct"
+                  messages:
+                    - role: "user"
+                      content: "What is machine learning?"
+                  stream: false
+                  max_tokens: 256
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionResponse'
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionChunk'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /completions:
+    post:
+      summary: Create text completion
+      description: Generate completion for a prompt (legacy format)
+      operationId: createCompletion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompletionRequest'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompletionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /models:
+    get:
+      summary: List available models
+      description: Returns all loaded models with their status
+      operationId: listModels
+      responses:
+        '200':
+          description: List of available models
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelList'
+              example:
+                object: "list"
+                data:
+                  - id: "deepseek-coder-33b-instruct"
+                    object: "model"
+                    created: 1699487600
+                    owned_by: "vllm"
+                    status: "ready"
+                  - id: "qwen-2.5-14b-instruct"
+                    object: "model"
+                    created: 1699487610
+                    owned_by: "vllm"
+                    status: "ready"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Single shared API key (configured in .env)
+
+  schemas:
+    ChatCompletionRequest:
+      type: object
+      required:
+        - model
+        - messages
+      properties:
+        model:
+          type: string
+          description: Model ID to use (routes to appropriate backend)
+          enum:
+            - "deepseek-coder-33b-instruct"
+            - "qwen-2.5-14b-instruct"
+            - "mistral-7b-v0.1"
+        messages:
+          type: array
+          description: Conversation history
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+          maxItems: 100
+        stream:
+          type: boolean
+          default: false
+          description: Enable SSE streaming
+        max_tokens:
+          type: integer
+          minimum: 1
+          maximum: 4096
+          description: Maximum tokens to generate
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+          default: 1.0
+          description: Sampling temperature
+        top_p:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 1.0
+        stop:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+          description: Stop sequences
+
+    ChatMessage:
+      type: object
+      required:
+        - role
+        - content
+      properties:
+        role:
+          type: string
+          enum: ["system", "user", "assistant"]
+        content:
+          type: string
+
+    ChatCompletionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "chatcmpl-abc123"
+        object:
+          type: string
+          enum: ["chat.completion"]
+        created:
+          type: integer
+          format: int64
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatCompletionChoice'
+        usage:
+          $ref: '#/components/schemas/Usage'
+
+    ChatCompletionChoice:
+      type: object
+      properties:
+        index:
+          type: integer
+        message:
+          $ref: '#/components/schemas/ChatMessage'
+        finish_reason:
+          type: string
+          enum: ["stop", "length", "content_filter"]
+
+    ChatCompletionChunk:
+      type: object
+      description: SSE event for streaming responses
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum: ["chat.completion.chunk"]
+        created:
+          type: integer
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              delta:
+                type: object
+                properties:
+                  role:
+                    type: string
+                  content:
+                    type: string
+              finish_reason:
+                type: string
+                nullable: true
+
+    CompletionRequest:
+      type: object
+      required:
+        - model
+        - prompt
+      properties:
+        model:
+          type: string
+        prompt:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+        max_tokens:
+          type: integer
+        temperature:
+          type: number
+
+    CompletionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum: ["text_completion"]
+        created:
+          type: integer
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              text:
+                type: string
+              index:
+                type: integer
+              finish_reason:
+                type: string
+        usage:
+          $ref: '#/components/schemas/Usage'
+
+    ModelList:
+      type: object
+      properties:
+        object:
+          type: string
+          enum: ["list"]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Model'
+
+    Model:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum: ["model"]
+        created:
+          type: integer
+        owned_by:
+          type: string
+        status:
+          type: string
+          enum: ["loading", "ready", "error"]
+          description: Custom extension for progressive availability
+
+    Usage:
+      type: object
+      properties:
+        prompt_tokens:
+          type: integer
+        completion_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            message:
+              type: string
+            type:
+              type: string
+            code:
+              type: string
+
+  responses:
+    BadRequest:
+      description: Invalid request (malformed JSON, missing required fields, token limit exceeded)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              message: "Context window exceeded: 3500 tokens > 3072 (75% of 4096)"
+              type: "invalid_request_error"
+              code: "context_length_exceeded"
+
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              message: "Invalid API key provided"
+              type: "invalid_request_error"
+              code: "invalid_api_key"
+
+    ServiceUnavailable:
+      description: |
+        Service temporarily unavailable (model loading, queue full, or backend error)
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying
+          schema:
+            type: integer
+            example: 5
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            modelLoading:
+              summary: Model still loading
+              value:
+                error:
+                  message: "Model 'deepseek-coder-33b-instruct' is still loading. Status: loading"
+                  type: "service_unavailable"
+                  code: "model_loading"
+            queueFull:
+              summary: Request queue full
+              value:
+                error:
+                  message: "Request queue full (100/100). Please retry after 5 seconds."
+                  type: "service_unavailable"
+                  code: "queue_full"
