@@ -178,12 +178,19 @@ export const useChat = () => {
 
   const switchModel = useCallback(async (targetModel: string) => {
     try {
+      // Create abort controller with 30 second timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+
       const response = await fetch(`${API_BASE_URL}/models/switch?target_model=${targetModel}`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${API_KEY}`,
         },
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
       const result = await response.json();
       if (!response.ok) {
         throw new Error(result.detail || result.message || 'Failed to switch model');
@@ -191,6 +198,15 @@ export const useChat = () => {
       return result;
     } catch (error) {
       console.error('Error switching model:', error);
+      // If it's an abort/network error, return a partial result so polling can still start
+      if (error instanceof Error && (error.name === 'AbortError' || error.message.includes('NetworkError') || error.message.includes('fetch'))) {
+        console.warn('Switch request timed out or had network error, but backend may still be processing. Returning partial result.');
+        return {
+          status: 'timeout',
+          message: 'Request timed out, but switch may still be in progress',
+          model: targetModel,
+        };
+      }
       throw error;
     }
   }, []);

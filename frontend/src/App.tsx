@@ -198,12 +198,18 @@ function App() {
 
       const result = await switchModel(newModel);
 
-      if (result.status === 'success' || result.status === 'already_loaded') {
+      // Handle success, already_loaded, or timeout (timeout means backend is still processing)
+      if (result.status === 'success' || result.status === 'already_loaded' || result.status === 'timeout') {
         setSwitchingInfo({
           targetModel: newModel,
           unloadedModels: result.unloaded_models || [],
-          estimatedLoadTime: result.estimated_load_time_seconds || 30,
+          estimatedLoadTime: result.estimated_load_time_seconds || 60, // Default to 60s for timeout
         });
+
+        // Show a note if request timed out
+        if (result.status === 'timeout') {
+          console.warn('Switch request timed out, but backend is still processing. Polling for completion...');
+        }
 
         // Poll status until model is ready
         const pollInterval = setInterval(async () => {
