@@ -92,7 +92,7 @@ app.add_middleware(
     allow_origins=["*"],  # Allow all origins
     allow_credentials=False,  # Must be False when allow_origins is "*"
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-    allow_headers=["*"],
+    allow_headers=["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"],
     expose_headers=["*"],
     max_age=600,  # Reduced to force more frequent preflight checks
 )
@@ -103,7 +103,7 @@ async def add_cors_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
-    response.headers["Access-Control-Allow-Headers"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, Accept, Origin, X-Requested-With"
     response.headers["Access-Control-Expose-Headers"] = "*"
     return response
 
@@ -240,26 +240,21 @@ async def readiness():
 
 @app.get("/v1/models")
 async def list_models(api_key: str = Depends(verify_api_key)):
-    """List available models"""
+    """List available models - only returns running and healthy models"""
     models = []
 
-    # Check which backends are available
-    coder_health = await check_backend_health(CODER_BACKEND_URL)
-    general_health = await check_backend_health(GENERAL_BACKEND_URL)
+    # Get status of all models
+    statuses = await get_models_status(api_key)
+    all_models = statuses.get("models", {})
 
-    if coder_health["status"] == "healthy":
-        models.append(ModelInfo(
-            id="deepseek-coder-33b-instruct",
-            created=int(time.time()),
-            status="ready"
-        ))
-
-    if general_health["status"] == "healthy":
-        models.append(ModelInfo(
-            id="mistral-7b-v0.1",
-            created=int(time.time()),
-            status="ready"
-        ))
+    # Only include models that are running and healthy
+    for model_name, status in all_models.items():
+        if status.get("status") == "running" and status.get("health") == "healthy":
+            models.append(ModelInfo(
+                id=model_name,
+                created=int(time.time()),
+                status="ready"
+            ))
 
     return ModelList(data=models)
 
@@ -428,24 +423,28 @@ CONTAINER_NAMES = {
 # Model metadata (sizes in GB, HuggingFace paths)
 MODEL_METADATA = {
     "gpt-oss-120b": {
-        "size_gb": 80,
+        "size_gb": 183,  # Updated from 80 to actual size
         "hf_path": "openai/gpt-oss-120b",
-        "description": "OpenAI GPT-OSS 120B - High reasoning model"
+        "description": "GPT-OSS 120B - Advanced reasoning (117B params, 5.1B active)",
+        "load_time_seconds": 61  # From benchmark
     },
     "gpt-oss-20b": {
-        "size_gb": 16,
+        "size_gb": 40,
         "hf_path": "openai/gpt-oss-20b",
-        "description": "OpenAI GPT-OSS 20B - Edge-optimized model"
+        "description": "GPT-OSS 20B - Efficient reasoning (21B params, 3.6B active)",
+        "load_time_seconds": 15  # Estimated
     },
     "deepseek-coder-33b-instruct": {
-        "size_gb": 19,
+        "size_gb": 43,
         "hf_path": "TheBloke/deepseek-coder-33B-instruct-AWQ",
-        "description": "DeepSeek Coder 33B - Python specialist"
+        "description": "DeepSeek Coder 33B - Python specialist",
+        "load_time_seconds": 20  # Estimated
     },
     "mistral-7b-v0.1": {
-        "size_gb": 4,
+        "size_gb": 7,
         "hf_path": "TheBloke/Mistral-7B-v0.1-AWQ",
-        "description": "Mistral 7B - General purpose"
+        "description": "Mistral 7B - General purpose",
+        "load_time_seconds": 8  # Estimated
     },
 }
 
@@ -513,6 +512,35 @@ async def check_model_downloaded(hf_path: str) -> Dict[str, Any]:
     }
 
 
+async def get_gpu_memory_info() -> dict:
+    """Get current GPU memory usage using nvidia-smi from a GPU container"""
+    try:
+        # Try to exec nvidia-smi from a GPU-enabled container
+        # Try gpt-oss-120b first as it's most likely to be running
+        gpu_containers = ["vllm-gpt-oss-120b", "vllm-coder", "vllm-general", "vllm-gpt-oss-20b"]
+
+        for container in gpu_containers:
+            success, output = await run_docker_command([
+                "docker", "exec", container, "nvidia-smi",
+                "--query-gpu=memory.used,memory.total",
+                "--format=csv,noheader,nounits"
+            ])
+
+            if success and output.strip():
+                used, total = output.strip().split(", ")
+                return {
+                    "used_mb": int(used),
+                    "total_mb": int(total),
+                    "available_mb": int(total) - int(used),
+                    "used_gb": round(int(used) / 1024, 2),
+                    "total_gb": round(int(total) / 1024, 2),
+                    "available_gb": round((int(total) - int(used)) / 1024, 2)
+                }
+    except Exception as e:
+        logger.error(f"Failed to get GPU memory: {e}")
+    return {"used_gb": 0, "total_gb": 0, "available_gb": 0}
+
+
 async def get_container_status(container_name: str) -> Dict[str, Any]:
     """Get status of a Docker container"""
     from datetime import datetime
@@ -572,8 +600,11 @@ async def get_container_status(container_name: str) -> Dict[str, Any]:
 
 @app.get("/v1/models/status")
 async def get_models_status(api_key: str = Depends(verify_api_key)):
-    """Get status of all model backends with download info"""
+    """Get status of all model backends with download info and GPU memory"""
     statuses = {}
+
+    # Get GPU memory info
+    gpu_info = await get_gpu_memory_info()
 
     for model_name, container_name in CONTAINER_NAMES.items():
         container_status = await get_container_status(container_name)
@@ -582,27 +613,22 @@ async def get_models_status(api_key: str = Depends(verify_api_key)):
         metadata = MODEL_METADATA.get(model_name, {})
         container_status["size_gb"] = metadata.get("size_gb")
         container_status["description"] = metadata.get("description")
+        container_status["estimated_load_time_seconds"] = metadata.get("load_time_seconds", 60)
+
+        # If running, estimate GPU memory usage (85% of model size for vLLM)
+        if container_status["status"] == "running":
+            model_size_gb = metadata.get("size_gb", 0)
+            container_status["gpu_memory_used_gb"] = round(model_size_gb * 0.85, 1)
 
         # Check if model is downloaded
         # Logic:
         # 1. If container is running or loading → model MUST be downloaded
         # 2. If container has EVER started → model MUST be downloaded (can't run without files)
-        # 3. Otherwise → check filesystem for actual download status
+        # 3. Get model size info if available
         hf_path = metadata.get("hf_path")
         if hf_path:
-            if container_status["status"] in ["running", "loading"] or container_status.get("ever_started", False):
-                # Model must be downloaded if it's running, loading, or has ever run
-                container_status["downloaded"] = True
-                container_status["downloading"] = False
-                # Still get size info
-                download_info = await check_model_downloaded(hf_path)
-                container_status["downloaded_size"] = download_info["size"]
-            else:
-                # Check actual download status for containers that have never started
-                download_info = await check_model_downloaded(hf_path)
-                container_status["downloaded"] = download_info["downloaded"]
-                container_status["downloading"] = download_info["downloading"]
-                container_status["downloaded_size"] = download_info["size"]
+            download_info = await check_model_downloaded(hf_path)
+            container_status["downloaded_size"] = download_info["size"]
 
         # Check backend health if running (but not loading)
         if container_status["status"] == "running":
@@ -617,7 +643,10 @@ async def get_models_status(api_key: str = Depends(verify_api_key)):
 
         statuses[model_name] = container_status
 
-    return {"models": statuses}
+    return {
+        "models": statuses,
+        "gpu": gpu_info  # NEW: Add GPU memory info
+    }
 
 
 @app.post("/v1/models/{model_name}/start")
@@ -710,6 +739,129 @@ async def restart_model(model_name: str, api_key: str = Depends(verify_api_key))
         "message": f"Model '{model_name}' restarted successfully",
         "status": "restarting",
         "container": container_name
+    }
+
+
+@app.post("/v1/models/switch")
+async def switch_model(
+    target_model: str,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Smart model switching with automatic memory management.
+
+    Query Parameters:
+        target_model: Name of the model to switch to
+
+    Returns:
+        Success: Information about the switch including unloaded models
+        Error: Details about why the switch failed
+    """
+
+    # Validate model exists
+    if target_model not in CONTAINER_NAMES:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Model '{target_model}' not found. Available: {list(CONTAINER_NAMES.keys())}"
+        )
+
+    # Step 1: Check if already running
+    container_name = CONTAINER_NAMES[target_model]
+    status = await get_container_status(container_name)
+
+    if status["status"] == "running":
+        # Check if healthy
+        backend_url = MODEL_ROUTING.get(target_model)
+        if backend_url:
+            health = await check_backend_health(backend_url)
+            if health.get("status") == "healthy":
+                return {
+                    "status": "already_loaded",
+                    "model": target_model,
+                    "message": f"Model '{target_model}' is already running and healthy"
+                }
+
+    # Step 2: Get memory requirements
+    metadata = MODEL_METADATA.get(target_model, {})
+    model_size_gb = metadata.get("size_gb", 0)
+    required_memory_gb = model_size_gb * 0.85  # 85% GPU memory utilization
+
+    # Step 3: Check available memory
+    gpu_info = await get_gpu_memory_info()
+    available_gb = gpu_info["available_gb"]
+
+    logger.info(
+        f"Model switch requested: {target_model} | "
+        f"Required: {required_memory_gb:.1f}GB | Available: {available_gb:.1f}GB"
+    )
+
+    # Step 4: Unload models if needed (largest first strategy)
+    unloaded_models = []
+    if available_gb < required_memory_gb:
+        # Get all running models
+        all_statuses = await get_models_status(api_key)
+        running_models = []
+
+        for model_name, model_status in all_statuses["models"].items():
+            if model_name != target_model and model_status["status"] == "running":
+                model_metadata = MODEL_METADATA.get(model_name, {})
+                size_gb = model_metadata.get("size_gb", 0)
+                running_models.append({
+                    "name": model_name,
+                    "size_gb": size_gb,
+                    "memory_gb": size_gb * 0.85
+                })
+
+        # Sort by size (largest first) for efficient unloading
+        running_models.sort(key=lambda m: m["size_gb"], reverse=True)
+
+        # Unload models until we have enough memory
+        freed_memory = 0
+        for model in running_models:
+            if available_gb + freed_memory >= required_memory_gb:
+                break
+
+            # Stop this model
+            logger.info(f"Unloading {model['name']} ({model['size_gb']}GB) to free memory")
+            await stop_model(model["name"], api_key)
+            unloaded_models.append(model["name"])
+            freed_memory += model["memory_gb"]
+
+            # Brief pause to let container stop
+            await asyncio.sleep(2)
+
+        # Check if we have enough memory now
+        total_available = available_gb + freed_memory
+        if total_available < required_memory_gb:
+            return {
+                "status": "error",
+                "error": "insufficient_memory",
+                "message": (
+                    f"Cannot free enough GPU memory to load {target_model}. "
+                    f"Required: {required_memory_gb:.1f}GB, "
+                    f"Available after unloading all models: {total_available:.1f}GB"
+                ),
+                "required_gb": round(required_memory_gb, 1),
+                "available_gb": round(available_gb, 1),
+                "freed_gb": round(freed_memory, 1),
+                "total_available_gb": round(total_available, 1)
+            }
+
+    # Step 5: Start target model
+    logger.info(f"Starting {target_model}...")
+    start_result = await start_model(target_model, api_key)
+
+    return {
+        "status": "success",
+        "model": target_model,
+        "unloaded_models": unloaded_models,
+        "start_result": start_result,
+        "estimated_load_time_seconds": metadata.get("load_time_seconds", 60),
+        "memory_info": {
+            "required_gb": round(required_memory_gb, 1),
+            "available_before_gb": round(available_gb, 1),
+            "freed_gb": round(sum([m["memory_gb"] for m in running_models if m["name"] in unloaded_models]), 1) if unloaded_models else 0
+        }
     }
 
 
