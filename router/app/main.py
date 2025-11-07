@@ -420,28 +420,33 @@ CONTAINER_NAMES = {
     "mistral-7b-v0.1": "vllm-general",
 }
 
-# Model metadata (sizes in GB, HuggingFace paths)
+# Model metadata (GPU memory requirements based on --gpu-memory-utilization settings)
+# GPU Total: ~95.6GB, so each model uses: total * utilization factor
 MODEL_METADATA = {
     "gpt-oss-120b": {
-        "size_gb": 183,  # Updated from 80 to actual size
+        "gpu_memory_gb": 81,  # 95.6GB * 0.85 utilization
+        "disk_size_gb": 183,  # Disk size for reference
         "hf_path": "openai/gpt-oss-120b",
         "description": "GPT-OSS 120B - Advanced reasoning (117B params, 5.1B active)",
         "load_time_seconds": 61  # From benchmark
     },
     "gpt-oss-20b": {
-        "size_gb": 40,
+        "gpu_memory_gb": 19,  # 95.6GB * 0.20 utilization
+        "disk_size_gb": 40,
         "hf_path": "openai/gpt-oss-20b",
         "description": "GPT-OSS 20B - Efficient reasoning (21B params, 3.6B active)",
         "load_time_seconds": 15  # Estimated
     },
     "deepseek-coder-33b-instruct": {
-        "size_gb": 43,
+        "gpu_memory_gb": 43,  # 95.6GB * 0.45 utilization
+        "disk_size_gb": 43,
         "hf_path": "TheBloke/deepseek-coder-33B-instruct-AWQ",
         "description": "DeepSeek Coder 33B - Python specialist",
         "load_time_seconds": 20  # Estimated
     },
     "mistral-7b-v0.1": {
-        "size_gb": 7,
+        "gpu_memory_gb": 38,  # 95.6GB * 0.40 utilization
+        "disk_size_gb": 7,
         "hf_path": "TheBloke/Mistral-7B-v0.1-AWQ",
         "description": "Mistral 7B - General purpose",
         "load_time_seconds": 8  # Estimated
@@ -513,10 +518,9 @@ async def check_model_downloaded(hf_path: str) -> Dict[str, Any]:
 
 
 async def get_gpu_memory_info() -> dict:
-    """Get current GPU memory usage using nvidia-smi from a GPU container"""
+    """Get current GPU memory usage using nvidia-smi"""
     try:
-        # Try to exec nvidia-smi from a GPU-enabled container
-        # Try gpt-oss-120b first as it's most likely to be running
+        # Try to exec nvidia-smi from running GPU containers first
         gpu_containers = ["vllm-gpt-oss-120b", "vllm-coder", "vllm-general", "vllm-gpt-oss-20b"]
 
         for container in gpu_containers:
@@ -536,6 +540,26 @@ async def get_gpu_memory_info() -> dict:
                     "total_gb": round(int(total) / 1024, 2),
                     "available_gb": round((int(total) - int(used)) / 1024, 2)
                 }
+
+        # If no containers are running, use a temporary container
+        logger.info("No running GPU containers found, using temporary container for GPU memory check")
+        success, output = await run_docker_command([
+            "docker", "run", "--rm", "--gpus", "all",
+            "nvidia/cuda:12.1.0-base-ubuntu22.04",
+            "nvidia-smi", "--query-gpu=memory.used,memory.total",
+            "--format=csv,noheader,nounits"
+        ])
+
+        if success and output.strip():
+            used, total = output.strip().split(", ")
+            return {
+                "used_mb": int(used),
+                "total_mb": int(total),
+                "available_mb": int(total) - int(used),
+                "used_gb": round(int(used) / 1024, 2),
+                "total_gb": round(int(total) / 1024, 2),
+                "available_gb": round((int(total) - int(used)) / 1024, 2)
+            }
     except Exception as e:
         logger.error(f"Failed to get GPU memory: {e}")
     return {"used_gb": 0, "total_gb": 0, "available_gb": 0}
@@ -611,14 +635,14 @@ async def get_models_status(api_key: str = Depends(verify_api_key)):
 
         # Add model metadata
         metadata = MODEL_METADATA.get(model_name, {})
-        container_status["size_gb"] = metadata.get("size_gb")
+        container_status["size_gb"] = metadata.get("disk_size_gb")  # For display purposes
+        container_status["gpu_memory_gb"] = metadata.get("gpu_memory_gb")  # Actual GPU memory requirement
         container_status["description"] = metadata.get("description")
         container_status["estimated_load_time_seconds"] = metadata.get("load_time_seconds", 60)
 
-        # If running, estimate GPU memory usage (85% of model size for vLLM)
+        # If running, show actual GPU memory usage
         if container_status["status"] == "running":
-            model_size_gb = metadata.get("size_gb", 0)
-            container_status["gpu_memory_used_gb"] = round(model_size_gb * 0.85, 1)
+            container_status["gpu_memory_used_gb"] = metadata.get("gpu_memory_gb", 0)
 
         # Check if model is downloaded
         # Logic:
@@ -783,8 +807,7 @@ async def switch_model(
 
     # Step 2: Get memory requirements
     metadata = MODEL_METADATA.get(target_model, {})
-    model_size_gb = metadata.get("size_gb", 0)
-    required_memory_gb = model_size_gb * 0.85  # 85% GPU memory utilization
+    required_memory_gb = metadata.get("gpu_memory_gb", 0)  # Actual GPU memory needed
 
     # Step 3: Check available memory
     gpu_info = await get_gpu_memory_info()
@@ -805,15 +828,14 @@ async def switch_model(
         for model_name, model_status in all_statuses["models"].items():
             if model_name != target_model and model_status["status"] == "running":
                 model_metadata = MODEL_METADATA.get(model_name, {})
-                size_gb = model_metadata.get("size_gb", 0)
+                gpu_memory_gb = model_metadata.get("gpu_memory_gb", 0)
                 running_models.append({
                     "name": model_name,
-                    "size_gb": size_gb,
-                    "memory_gb": size_gb * 0.85
+                    "gpu_memory_gb": gpu_memory_gb
                 })
 
-        # Sort by size (largest first) for efficient unloading
-        running_models.sort(key=lambda m: m["size_gb"], reverse=True)
+        # Sort by GPU memory (largest first) for efficient unloading
+        running_models.sort(key=lambda m: m["gpu_memory_gb"], reverse=True)
 
         # Unload models until we have enough memory
         freed_memory = 0
@@ -822,16 +844,20 @@ async def switch_model(
                 break
 
             # Stop this model
-            logger.info(f"Unloading {model['name']} ({model['size_gb']}GB) to free memory")
+            logger.info(f"Unloading {model['name']} ({model['gpu_memory_gb']}GB GPU) to free memory")
             await stop_model(model["name"], api_key)
             unloaded_models.append(model["name"])
-            freed_memory += model["memory_gb"]
+            freed_memory += model["gpu_memory_gb"]
 
-            # Brief pause to let container stop
-            await asyncio.sleep(2)
+            # Brief pause to let container stop and GPU memory to be freed
+            await asyncio.sleep(5)
 
-        # Check if we have enough memory now
-        total_available = available_gb + freed_memory
+        # Refresh GPU memory info after stopping models
+        gpu_info_after = await get_gpu_memory_info()
+        total_available = gpu_info_after["available_gb"]
+
+        logger.info(f"After unloading: Available GPU memory: {total_available:.1f}GB")
+
         if total_available < required_memory_gb:
             return {
                 "status": "error",
@@ -860,7 +886,7 @@ async def switch_model(
         "memory_info": {
             "required_gb": round(required_memory_gb, 1),
             "available_before_gb": round(available_gb, 1),
-            "freed_gb": round(sum([m["memory_gb"] for m in running_models if m["name"] in unloaded_models]), 1) if unloaded_models else 0
+            "freed_gb": round(sum([m["gpu_memory_gb"] for m in running_models if m["name"] in unloaded_models]), 1) if unloaded_models else 0
         }
     }
 
