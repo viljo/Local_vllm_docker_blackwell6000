@@ -31,6 +31,8 @@ CODER_BACKEND_URL = os.getenv("CODER_BACKEND_URL", "http://vllm-coder:8000")
 GENERAL_BACKEND_URL = os.getenv("GENERAL_BACKEND_URL", "http://vllm-general:8000")
 GPT_OSS_120B_BACKEND_URL = os.getenv("GPT_OSS_120B_BACKEND_URL", "http://vllm-gpt-oss-120b:8000")
 GPT_OSS_20B_BACKEND_URL = os.getenv("GPT_OSS_20B_BACKEND_URL", "http://vllm-gpt-oss-20b:8000")
+DOCKER_COMPOSE_FILE = os.getenv("DOCKER_COMPOSE_FILE", "/docker-compose.yml")
+HOST_PROJECT_DIR = os.getenv("HOST_PROJECT_DIR", "/home/asvil/git/local_llm_service")  # Fallback for local dev
 
 # Model routing configuration
 MODEL_ROUTING = {
@@ -420,32 +422,41 @@ CONTAINER_NAMES = {
     "mistral-7b-v0.1": "vllm-general",
 }
 
+# Docker Compose profiles for each container
+CONTAINER_PROFILES = {
+    "vllm-gpt-oss-120b": "gpt-oss-120b",
+    "vllm-gpt-oss-20b": "gpt-oss-20b",
+    "vllm-coder": "deepseek-coder",
+    "vllm-general": "mistral",
+}
+
 # Model metadata (GPU memory requirements based on --gpu-memory-utilization settings)
-# GPU Total: ~95.6GB, so each model uses: total * utilization factor
+# GPU Total: ~95.6GB, each model reserves: total_gpu * utilization_factor
+# Reserved memory includes: model weights + KV cache + activations + overhead
 MODEL_METADATA = {
     "gpt-oss-120b": {
-        "gpu_memory_gb": 81,  # 95.6GB * 0.85 utilization
+        "gpu_memory_gb": 81,  # 95.6GB * 0.85 utilization (model: 122GB disk, MXFP4 quantized in memory)
         "disk_size_gb": 183,  # Disk size for reference
         "hf_path": "openai/gpt-oss-120b",
         "description": "GPT-OSS 120B - Advanced reasoning (117B params, 5.1B active)",
         "load_time_seconds": 61  # From benchmark
     },
     "gpt-oss-20b": {
-        "gpu_memory_gb": 19,  # 95.6GB * 0.20 utilization
+        "gpu_memory_gb": 19,  # 95.6GB * 0.20 utilization (model: 26GB disk, MXFP4 quantized in memory)
         "disk_size_gb": 40,
         "hf_path": "openai/gpt-oss-20b",
         "description": "GPT-OSS 20B - Efficient reasoning (21B params, 3.6B active)",
         "load_time_seconds": 15  # Estimated
     },
     "deepseek-coder-33b-instruct": {
-        "gpu_memory_gb": 43,  # 95.6GB * 0.45 utilization
+        "gpu_memory_gb": 43,  # 95.6GB * 0.45 utilization (model: 17GB + KV cache: 26GB)
         "disk_size_gb": 43,
         "hf_path": "TheBloke/deepseek-coder-33B-instruct-AWQ",
         "description": "DeepSeek Coder 33B - Python specialist",
         "load_time_seconds": 20  # Estimated
     },
     "mistral-7b-v0.1": {
-        "gpu_memory_gb": 38,  # 95.6GB * 0.40 utilization
+        "gpu_memory_gb": 10,  # 95.6GB * 0.10 utilization (model: 4GB + KV cache: 5.5GB + overhead)
         "disk_size_gb": 7,
         "hf_path": "TheBloke/Mistral-7B-v0.1-AWQ",
         "description": "Mistral 7B - General purpose",
@@ -453,13 +464,22 @@ MODEL_METADATA = {
     },
 }
 
-async def run_docker_command(command: List[str]) -> tuple[bool, str]:
+async def run_docker_command(command: List[str], cwd: str = None, env: Dict[str, str] = None) -> tuple[bool, str]:
     """Execute docker command asynchronously"""
     try:
+        logger.info(f"Executing docker command: {' '.join(command)}" + (f" (cwd={cwd})" if cwd else "") + (f" (env={env})" if env else ""))
+
+        # Merge custom env with current environment
+        process_env = os.environ.copy()
+        if env:
+            process_env.update(env)
+
         process = await asyncio.create_subprocess_exec(
             *command,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+            env=process_env
         )
         stdout, stderr = await process.communicate()
 
@@ -483,23 +503,24 @@ async def check_model_downloaded(hf_path: str) -> Dict[str, Any]:
         return {"downloaded": False, "downloading": False, "size": None}
 
     # Check if download is complete by looking at .no_exist directory
-    # If .no_exist has files, download is incomplete
-    success, no_exist_count = await run_docker_command([
+    # Only check for essential files - ignore optional ones like preprocessor_config.json, video_preprocessor_config.json, etc.
+    success, no_exist_files = await run_docker_command([
         "docker", "exec", "vllm-router", "sh", "-c",
-        f"find '{model_dir}/.no_exist' -type f 2>/dev/null | wc -l"
+        f"find '{model_dir}/.no_exist' -type f -name '*.safetensors' -o -name 'config.json' 2>/dev/null"
     ])
 
     is_downloading = False
     is_fully_downloaded = False
 
     if success:
-        incomplete_files = int(no_exist_count.strip()) if no_exist_count.strip().isdigit() else 0
-        if incomplete_files > 0:
-            is_downloading = True  # Download in progress
+        # Only consider model as incomplete if essential files (weights, config) are missing
+        has_essential_missing = bool(no_exist_files.strip())
+        if has_essential_missing:
+            is_downloading = True  # Essential files still downloading
             is_fully_downloaded = False
         else:
             is_downloading = False
-            is_fully_downloaded = True  # Download complete
+            is_fully_downloaded = True  # Essential files complete (optional files don't matter)
     else:
         # If .no_exist doesn't exist at all, assume download is complete
         is_fully_downloaded = True
@@ -563,6 +584,30 @@ async def get_gpu_memory_info() -> dict:
     except Exception as e:
         logger.error(f"Failed to get GPU memory: {e}")
     return {"used_gb": 0, "total_gb": 0, "available_gb": 0}
+
+
+async def get_container_gpu_memory(container_name: str) -> float:
+    """Get GPU memory used by a specific container in GB"""
+    try:
+        # Check container is running
+        success, status = await run_docker_command([
+            "docker", "inspect", "--format", "{{.State.Status}}", container_name
+        ])
+        if not success or status.strip() != "running":
+            return 0.0
+
+        # Get GPU memory from container
+        success, output = await run_docker_command([
+            "docker", "exec", container_name, "nvidia-smi",
+            "--query-gpu=memory.used",
+            "--format=csv,noheader,nounits"
+        ])
+        if success and output.strip():
+            used_mb = int(output.strip())
+            return round(used_mb / 1024, 1)
+    except Exception as e:
+        logger.debug(f"Could not get GPU memory for {container_name}: {e}")
+    return 0.0
 
 
 async def get_container_status(container_name: str) -> Dict[str, Any]:
@@ -681,8 +726,12 @@ async def get_models_status(api_key: str = Depends(verify_api_key)):
         container_status["estimated_load_time_seconds"] = metadata.get("load_time_seconds", 60)
 
         # If running, show actual GPU memory usage
+        # Note: We don't show live progress during loading because nvidia-smi reports
+        # total GPU memory, not per-container memory, which gives misleading values
         if container_status["status"] == "running":
-            container_status["gpu_memory_used_gb"] = metadata.get("gpu_memory_gb", 0)
+            # Get current GPU memory used by this container
+            current_gpu_memory = await get_container_gpu_memory(container_name)
+            container_status["gpu_memory_used_gb"] = current_gpu_memory
 
         # Check if model is downloaded
         # Logic:
@@ -707,6 +756,35 @@ async def get_models_status(api_key: str = Depends(verify_api_key)):
 
         statuses[model_name] = container_status
 
+    # Add proactive GPU memory warnings for stopped models
+    for model_name, status in statuses.items():
+        # Only check stopped/exited/failed models that aren't currently running
+        if status["status"] in ["exited", "not_found", "insufficient_gpu_ram"]:
+            required_gb = status.get("gpu_memory_gb", 0)
+            total_gpu = gpu_info.get("total_gb", 0)
+            available_gpu = gpu_info.get("available_gb", 0)
+
+            # Check if model is too big to ever fit (even with all models unloaded)
+            if required_gb > total_gpu:
+                status["status"] = "insufficient_gpu_ram"
+                status["error"] = f"Model requires {required_gb}GB but GPU only has {total_gpu}GB total"
+            # Check if model won't fit with current running models but could fit if we unload
+            elif required_gb > available_gpu:
+                status["status"] = "requires_unload"
+                status["warning"] = "Starting will unload other models to free GPU memory"
+                # Clear old error message
+                if "error" in status:
+                    del status["error"]
+            # Model would fit with current available memory - clear any old error status
+            else:
+                if status["status"] == "insufficient_gpu_ram":
+                    status["status"] = "exited"
+                # Clear old error/warning messages
+                if "error" in status:
+                    del status["error"]
+                if "warning" in status:
+                    del status["warning"]
+
     return {
         "models": statuses,
         "gpu": gpu_info  # NEW: Add GPU memory info
@@ -724,10 +802,37 @@ async def start_model(model_name: str, api_key: str = Depends(verify_api_key)):
 
     container_name = CONTAINER_NAMES[model_name]
 
+    # Check if model is fully downloaded
+    metadata = MODEL_METADATA.get(model_name, {})
+    hf_path = metadata.get("hf_path")
+    if hf_path:
+        download_info = await check_model_downloaded(hf_path)
+        if download_info["downloading"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Model '{model_name}' is still downloading. Please wait for download to complete. Current size: {download_info['size'] or 'unknown'}"
+            )
+        if not download_info["downloaded"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Model '{model_name}' is not fully downloaded. Please ensure the model files are downloaded before starting."
+            )
+
     # Check current status
     status = await get_container_status(container_name)
     if status["status"] == "running":
         return {"message": f"Model '{model_name}' is already running", "status": "running"}
+
+    # Get profile for this container (if any)
+    profile = CONTAINER_PROFILES.get(container_name)
+    # Use project directory as working directory so relative paths in docker-compose.yml work
+    project_dir = os.path.dirname(DOCKER_COMPOSE_FILE)
+    compose_cmd_base = ["docker", "compose", "-f", DOCKER_COMPOSE_FILE, "-p", "local-llm-service"]
+    if profile:
+        compose_cmd_base.extend(["--profile", profile])
+
+    # Set PWD to host project directory so ${PWD} in docker-compose.yml resolves correctly
+    compose_env = {"PWD": HOST_PROJECT_DIR}
 
     # If container is in failed state, remove it and recreate using docker-compose
     if status["status"] in ["failed", "insufficient_gpu_ram"]:
@@ -735,7 +840,7 @@ async def start_model(model_name: str, api_key: str = Depends(verify_api_key)):
         await run_docker_command(["docker", "rm", "-f", container_name])
         # Use docker-compose to recreate and start
         logger.info(f"Starting model '{model_name}' (container: {container_name})")
-        success, output = await run_docker_command(["docker", "compose", "up", "-d", container_name])
+        success, output = await run_docker_command(compose_cmd_base + ["up", "-d", container_name], cwd=project_dir, env=compose_env)
     elif status["status"] == "exited":
         # Just restart if it was cleanly stopped
         logger.info(f"Starting model '{model_name}' (container: {container_name})")
@@ -743,7 +848,7 @@ async def start_model(model_name: str, api_key: str = Depends(verify_api_key)):
     else:
         # Container doesn't exist, use docker-compose to create and start
         logger.info(f"Starting model '{model_name}' (container: {container_name})")
-        success, output = await run_docker_command(["docker", "compose", "up", "-d", container_name])
+        success, output = await run_docker_command(compose_cmd_base + ["up", "-d", container_name], cwd=project_dir, env=compose_env)
 
     if not success:
         raise HTTPException(
@@ -901,8 +1006,10 @@ async def switch_model(
             unloaded_models.append(model["name"])
             freed_memory += model["gpu_memory_gb"]
 
-            # Brief pause to let container stop and GPU memory to be freed
-            await asyncio.sleep(5)
+            # Wait for container to stop and GPU memory to be fully released
+            # Increased to 15 seconds to avoid memory profiling errors during model switch
+            logger.info("Waiting for GPU memory to be released...")
+            await asyncio.sleep(15)
 
         # Refresh GPU memory info after stopping models
         gpu_info_after = await get_gpu_memory_info()

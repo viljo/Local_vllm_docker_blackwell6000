@@ -4,11 +4,12 @@ services:
     image: vllm/vllm-openai:latest
     container_name: vllm-coder
     environment:
-      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_VISIBLE_DEVICES: "0"  # Exclusive access to GPU 0
       HF_HOME: /models
     volumes:
       - ./models:/models
       - ./data:/data
+      - ${PWD}/deepseek_chat_template.jinja:/templates/deepseek_chat_template.jinja:ro
     ports:
       - "${CODER_BACKEND_PORT:-8000}:8000"
       - "9090:9090"  # Prometheus metrics
@@ -23,12 +24,13 @@ services:
       - --max-num-batched-tokens=${CODER_MAX_BATCHED_TOKENS:-8192}
       - --enable-prefix-caching
       - --trust-remote-code
+      - --chat-template=/templates/deepseek_chat_template.jinja
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["0"]  # Exclusive access to GPU 0
               capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -36,20 +38,23 @@ services:
       timeout: 10s
       retries: 3
       start_period: 600s  # 10 minutes for model loading
-    restart: unless-stopped
+    restart: "no"  # Manual start for dynamic loading
     networks:
       - llm-network
+    profiles:
+      - deepseek-coder
 
   # General Purpose Model Backend (Mistral 7B / Qwen 14B)
   vllm-general:
     image: vllm/vllm-openai:latest
     container_name: vllm-general
     environment:
-      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_VISIBLE_DEVICES: "0"  # Exclusive access to GPU 0
       HF_HOME: /models
     volumes:
       - ./models:/models
       - ./data:/data
+      - ${PWD}/mistral_chat_template.jinja:/templates/mistral_chat_template.jinja:ro
     ports:
       - "${GENERAL_BACKEND_PORT:-8001}:8000"
       - "9091:9090"  # Prometheus metrics
@@ -58,18 +63,19 @@ services:
       - --port=8000
       - --host=0.0.0.0
       - --api-key=${API_KEY}
-      - --gpu-memory-utilization=${GENERAL_GPU_MEMORY:-0.40}
+      - --gpu-memory-utilization=${GENERAL_GPU_MEMORY:-0.10}
       - --max-model-len=${GENERAL_MAX_MODEL_LEN:-4096}
       - --max-num-seqs=${GENERAL_MAX_SEQ:-128}
       - --max-num-batched-tokens=${GENERAL_MAX_BATCHED_TOKENS:-8192}
       - --enable-prefix-caching
       - --trust-remote-code
+      - --chat-template=/templates/mistral_chat_template.jinja
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["0"]  # Exclusive access to GPU 0
               capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -77,16 +83,18 @@ services:
       timeout: 10s
       retries: 3
       start_period: 600s  # 10 minutes for model loading
-    restart: unless-stopped
+    restart: "no"  # Manual start for dynamic loading
     networks:
       - llm-network
+    profiles:
+      - mistral
 
   # GPT-OSS 120B Model Backend (OpenAI Open Source)
   vllm-gpt-oss-120b:
     image: vllm/vllm-openai:latest
     container_name: vllm-gpt-oss-120b
     environment:
-      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_VISIBLE_DEVICES: "0"  # Exclusive access to GPU 0
       HF_HOME: /models
     volumes:
       - ./models:/models
@@ -107,12 +115,14 @@ services:
       - --trust-remote-code
       - --tool-call-parser=openai
       - --enable-auto-tool-choice
+      - --load-format=safetensors
+      - --dtype=auto
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["0"]  # Exclusive access to GPU 0
               capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -131,7 +141,7 @@ services:
     image: vllm/vllm-openai:latest
     container_name: vllm-gpt-oss-20b
     environment:
-      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_VISIBLE_DEVICES: "0"  # Exclusive access to GPU 0
       HF_HOME: /models
     volumes:
       - ./models:/models
@@ -152,12 +162,14 @@ services:
       - --trust-remote-code
       - --tool-call-parser=openai
       - --enable-auto-tool-choice
+      - --load-format=safetensors
+      - --dtype=auto
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["0"]  # Exclusive access to GPU 0
               capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -184,14 +196,14 @@ services:
       GPT_OSS_120B_BACKEND_URL: http://vllm-gpt-oss-120b:8000
       GPT_OSS_20B_BACKEND_URL: http://vllm-gpt-oss-20b:8000
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DOCKER_COMPOSE_FILE: /project/docker-compose.yml
+      HOST_PROJECT_DIR: ${PWD}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock  # For model management
       - ./models:/models  # For model download detection
+      - .:/project:ro  # Mount entire project for docker-compose to access template files
     ports:
       - "${ROUTER_PORT:-8080}:8080"
-    depends_on:
-      - vllm-coder
-      - vllm-general
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 10s

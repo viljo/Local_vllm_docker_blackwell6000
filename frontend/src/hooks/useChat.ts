@@ -139,10 +139,13 @@ export const useChat = () => {
         },
       });
       const data = await response.json();
-      return data.models || {};
+      return {
+        models: data.models || {},
+        gpu: data.gpu || {}
+      };
     } catch (error) {
       console.error('Error fetching model status:', error);
-      return {};
+      return { models: {}, gpu: {} };
     }
   }, []);
 

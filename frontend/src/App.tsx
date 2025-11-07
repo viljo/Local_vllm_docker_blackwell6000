@@ -18,14 +18,15 @@ function App() {
     clearCurrentConversation,
   } = useChatStore();
 
-  const { sendMessage, fetchModels, getModelsStatus, startModel, stopModel, switchModel } = useChat();
+  const { sendMessage, fetchModels, getModelsStatus, stopModel, switchModel } = useChat();
   const [input, setInput] = useState('');
   const [modelStatus, setModelStatus] = useState<Record<string, any>>({});
+  const [gpuInfo, setGpuInfo] = useState<any>({});
   const [showModelManager, setShowModelManager] = useState(false);
   const [unloadingModels, setUnloadingModels] = useState<Set<string>>(new Set());
-  const [loadingModels, setLoadingModels] = useState<Set<string>>(new Set());
   const [isSwitchingModel, setIsSwitchingModel] = useState(false);
   const [switchingInfo, setSwitchingInfo] = useState<any>(null);
+  const [showApiInfo, setShowApiInfo] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const currentConv =
@@ -52,12 +53,14 @@ function App() {
           setSelectedModel(modelList[0].id);
         }
       }
-      setModelStatus(status);
+      setModelStatus(status.models);
+      setGpuInfo(status.gpu);
     };
 
     fetchData();
+
     // Refresh models and status every 30 seconds
-    const interval = setInterval(async () => {
+    const modelInterval = setInterval(async () => {
       const [fetchedModels, status] = await Promise.all([
         fetchModels(),
         getModelsStatus(),
@@ -77,10 +80,21 @@ function App() {
           setSelectedModel(modelList[0].id);
         }
       }
-      setModelStatus(status);
+      setModelStatus(status.models);
+      setGpuInfo(status.gpu);
     }, 30000);
 
-    return () => clearInterval(interval);
+    // Refresh GPU stats every 2 seconds for live updates
+    const gpuInterval = setInterval(async () => {
+      const status = await getModelsStatus();
+      setGpuInfo(status.gpu);
+      setModelStatus(status.models);
+    }, 2000);
+
+    return () => {
+      clearInterval(modelInterval);
+      clearInterval(gpuInterval);
+    };
   }, [fetchModels, getModelsStatus, setModels, selectedModel, setSelectedModel]);
 
   // Auto-scroll to bottom
@@ -106,40 +120,68 @@ function App() {
 
   const handleStartModel = async (modelName: string) => {
     try {
-      // Immediately mark as loading
-      setLoadingModels(prev => new Set(prev).add(modelName));
+      // Use smart switching logic - same as dropdown
+      setIsSwitchingModel(true);
+      setSwitchingInfo({ targetModel: modelName, unloadedModels: [] });
 
-      await startModel(modelName);
+      const result = await switchModel(modelName);
 
-      // Refresh models and status, then clear loading state
-      const [fetchedModels, status] = await Promise.all([
-        fetchModels(),
-        getModelsStatus(),
-      ]);
+      if (result.status === 'success' || result.status === 'already_loaded' || result.status === 'timeout') {
+        setSwitchingInfo({
+          targetModel: modelName,
+          unloadedModels: result.unloaded_models || [],
+          estimatedLoadTime: result.estimated_load_time_seconds || 60,
+        });
 
-      if (fetchedModels.length > 0) {
-        setModels(
-          fetchedModels.map((m: any) => ({
-            id: m.id,
-            name: m.id,
-            status: m.status || 'ready',
-          }))
-        );
+        // Show a note if request timed out
+        if (result.status === 'timeout') {
+          console.warn('Start request timed out, but backend is still processing. Polling for completion...');
+        }
+
+        // Poll status until model is ready
+        const pollInterval = setInterval(async () => {
+          const status = await getModelsStatus();
+          setModelStatus(status.models);
+          setGpuInfo(status.gpu);
+
+          // Check if target model is running and healthy
+          if (status.models[modelName]?.status === 'running' && status.models[modelName]?.health === 'healthy') {
+            clearInterval(pollInterval);
+            setIsSwitchingModel(false);
+            setSwitchingInfo(null);
+            setSelectedModel(modelName);
+
+            // Refresh models list
+            const fetchedModels = await fetchModels();
+            if (fetchedModels.length > 0) {
+              setModels(
+                fetchedModels.map((m: any) => ({
+                  id: m.id,
+                  name: m.id,
+                  status: m.status || 'ready',
+                }))
+              );
+            }
+          }
+        }, 3000); // Poll every 3 seconds
+
+        // Timeout after 2 minutes
+        setTimeout(() => {
+          clearInterval(pollInterval);
+          if (isSwitchingModel) {
+            setIsSwitchingModel(false);
+            setSwitchingInfo(null);
+            alert('Model starting timed out. Please check Model Manager for status.');
+          }
+        }, 120000);
+      } else {
+        throw new Error(result.message || 'Failed to start model');
       }
-      setModelStatus(status);
-      setLoadingModels(prev => {
-        const next = new Set(prev);
-        next.delete(modelName);
-        return next;
-      });
     } catch (error) {
-      console.error('Failed to start model:', error);
-      // Clear loading state on error
-      setLoadingModels(prev => {
-        const next = new Set(prev);
-        next.delete(modelName);
-        return next;
-      });
+      console.error('Model start failed:', error);
+      setIsSwitchingModel(false);
+      setSwitchingInfo(null);
+      alert(`Failed to start ${modelName}: ${(error as Error).message}`);
     }
   };
 
@@ -165,7 +207,8 @@ function App() {
           }))
         );
       }
-      setModelStatus(status);
+      setModelStatus(status.models);
+      setGpuInfo(status.gpu);
       setUnloadingModels(prev => {
         const next = new Set(prev);
         next.delete(modelName);
@@ -183,17 +226,20 @@ function App() {
   };
 
   const handleModelChange = async (newModel: string) => {
+    // Set switching state immediately to lock UI
+    setIsSwitchingModel(true);
+
     // Check if model is already running and healthy
     const status = modelStatus[newModel];
     if (status?.status === 'running' && status?.health === 'healthy') {
       // Model is ready, just switch to it
       setSelectedModel(newModel);
+      setIsSwitchingModel(false);
       return;
     }
 
     // Model needs to be switched, show switching UI
     try {
-      setIsSwitchingModel(true);
       setSwitchingInfo({ targetModel: newModel, unloadedModels: [] });
 
       const result = await switchModel(newModel);
@@ -214,10 +260,11 @@ function App() {
         // Poll status until model is ready
         const pollInterval = setInterval(async () => {
           const status = await getModelsStatus();
-          setModelStatus(status);
+          setModelStatus(status.models);
+          setGpuInfo(status.gpu);
 
           // Check if target model is running and healthy
-          if (status[newModel]?.status === 'running' && status[newModel]?.health === 'healthy') {
+          if (status.models[newModel]?.status === 'running' && status.models[newModel]?.health === 'healthy') {
             clearInterval(pollInterval);
             setIsSwitchingModel(false);
             setSwitchingInfo(null);
@@ -319,10 +366,13 @@ function App() {
                 <optgroup label="━━━ Available ━━━">
                   {Object.entries(modelStatus)
                     .filter(([_, status]: [string, any]) =>
-                      status.status !== 'running' || status.health !== 'healthy'
+                      (status.status !== 'running' || status.health !== 'healthy') &&
+                      status.status !== 'not_found'
                     )
                     .map(([modelName, status]: [string, any]) => {
                       const statusText = status.status === 'loading' ? 'Loading' :
+                                        status.status === 'requires_unload' ? 'Requires unload' :
+                                        status.status === 'insufficient_gpu_ram' ? 'Too large' :
                                         status.status === 'failed' ? 'Failed' : 'Stopped';
                       return (
                         <option key={modelName} value={modelName}>
@@ -352,19 +402,32 @@ function App() {
           >
             Model Manager {showModelManager ? '▼' : '▶'}
           </button>
+
+          <button
+            className="api-info-btn"
+            onClick={() => setShowApiInfo(!showApiInfo)}
+          >
+            API Info {showApiInfo ? '▼' : '▶'}
+          </button>
         </div>
 
         {/* Model Manager Panel */}
         {showModelManager && (
           <div className="model-manager">
-            <h3>Model Management</h3>
+            <h3>
+              Model Management
+              {gpuInfo.available_gb !== undefined && (
+                <span className="gpu-stats">
+                  {' - '}{gpuInfo.available_gb}GB VideoRam free ({gpuInfo.used_gb}GB used)
+                </span>
+              )}
+            </h3>
             <div className="model-list">
-              {Object.entries(modelStatus).map(([modelName, status]: [string, any]) => {
+              {Object.entries(modelStatus)
+                .filter(([_, status]: [string, any]) => status.status !== 'not_found')
+                .map(([modelName, status]: [string, any]) => {
                 const getStatusDisplay = () => {
-                  // Check client-side loading/unloading state first
-                  if (loadingModels.has(modelName)) {
-                    return { icon: '◐', text: 'Loading into GPU-mem', color: 'loading' };
-                  }
+                  // Check client-side unloading state first
                   if (unloadingModels.has(modelName)) {
                     return { icon: '◑', text: 'Unloading model', color: 'unloading' };
                   }
@@ -374,6 +437,8 @@ function App() {
                       return { icon: '●', text: 'Running', color: 'running' };
                     case 'loading':
                       return { icon: '◐', text: 'Loading into GPU-mem', color: 'loading' };
+                    case 'requires_unload':
+                      return { icon: '⚠', text: 'Warning - Causes unload of current models', color: 'requires_unload' };
                     case 'insufficient_gpu_ram':
                       return { icon: '⚠', text: 'Insufficient free GPU-ram', color: 'insufficient_gpu_ram' };
                     case 'failed':
@@ -386,7 +451,7 @@ function App() {
                 };
 
                 const statusDisplay = getStatusDisplay();
-                const isActionDisabled = status.status === 'loading' || loadingModels.has(modelName) || unloadingModels.has(modelName);
+                const isActionDisabled = status.status === 'loading' || unloadingModels.has(modelName) || isSwitchingModel;
 
                 return (
                   <div key={modelName} className="model-item">
@@ -431,6 +496,48 @@ function App() {
                   </div>
                 );
               })}
+            </div>
+          </div>
+        )}
+
+        {/* API Info Panel */}
+        {showApiInfo && (
+          <div className="api-info-panel">
+            <h3>API Connection Information</h3>
+            <div className="api-info-content">
+              <div className="api-info-item">
+                <label className="api-info-label">Base URL:</label>
+                <div className="api-info-value">
+                  <code>{`http://${window.location.hostname}:8080/v1`}</code>
+                  <button
+                    className="copy-btn"
+                    onClick={() => {
+                      navigator.clipboard.writeText(`http://${window.location.hostname}:8080/v1`);
+                      alert('URL copied to clipboard!');
+                    }}
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div className="api-info-item">
+                <label className="api-info-label">API Key:</label>
+                <div className="api-info-value">
+                  <code>sk-local-2ac9387d659f7131f38d83e5f7bee469</code>
+                  <button
+                    className="copy-btn"
+                    onClick={() => {
+                      navigator.clipboard.writeText('sk-local-2ac9387d659f7131f38d83e5f7bee469');
+                      alert('API key copied to clipboard!');
+                    }}
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div className="api-info-note">
+                Use these credentials to connect external tools like Continue, Cursor, or any OpenAI-compatible client.
+              </div>
             </div>
           </div>
         )}
