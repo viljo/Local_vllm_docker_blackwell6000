@@ -91,7 +91,9 @@ export const useChat = () => {
 
                 try {
                   const parsed = JSON.parse(data);
-                  const delta = parsed.choices?.[0]?.delta?.content || '';
+                  // GPT-OSS models return reasoning_content and content separately
+                  const delta = parsed.choices?.[0]?.delta?.content ||
+                               parsed.choices?.[0]?.delta?.reasoning_content || '';
                   if (delta) {
                     fullContent += delta;
                     updateLastMessage(fullContent);
@@ -174,5 +176,24 @@ export const useChat = () => {
     }
   }, []);
 
-  return { sendMessage, fetchModels, getModelsStatus, startModel, stopModel };
+  const switchModel = useCallback(async (targetModel: string) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/models/switch?target_model=${targetModel}`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${API_KEY}`,
+        },
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.detail || result.message || 'Failed to switch model');
+      }
+      return result;
+    } catch (error) {
+      console.error('Error switching model:', error);
+      throw error;
+    }
+  }, []);
+
+  return { sendMessage, fetchModels, getModelsStatus, startModel, stopModel, switchModel };
 };

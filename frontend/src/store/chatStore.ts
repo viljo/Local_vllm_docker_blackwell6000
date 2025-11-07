@@ -36,7 +36,7 @@ export const useChatStore = create<ChatState>()(
       conversations: [createNewConversation()],
       currentConversationId: null,
       models: [],
-      selectedModel: 'deepseek-coder-33b-instruct',
+      selectedModel: '',
       isLoading: false,
 
       addConversation: () => {

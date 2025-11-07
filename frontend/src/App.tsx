@@ -8,7 +8,6 @@ function App() {
   const {
     conversations,
     currentConversationId,
-    models,
     selectedModel,
     isLoading,
     addConversation,
@@ -19,12 +18,14 @@ function App() {
     clearCurrentConversation,
   } = useChatStore();
 
-  const { sendMessage, fetchModels, getModelsStatus, startModel, stopModel } = useChat();
+  const { sendMessage, fetchModels, getModelsStatus, startModel, stopModel, switchModel } = useChat();
   const [input, setInput] = useState('');
   const [modelStatus, setModelStatus] = useState<Record<string, any>>({});
   const [showModelManager, setShowModelManager] = useState(false);
   const [unloadingModels, setUnloadingModels] = useState<Set<string>>(new Set());
   const [loadingModels, setLoadingModels] = useState<Set<string>>(new Set());
+  const [isSwitchingModel, setIsSwitchingModel] = useState(false);
+  const [switchingInfo, setSwitchingInfo] = useState<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const currentConv =
@@ -39,13 +40,17 @@ function App() {
       ]);
 
       if (fetchedModels.length > 0) {
-        setModels(
-          fetchedModels.map((m: any) => ({
-            id: m.id,
-            name: m.id,
-            status: m.status || 'ready',
-          }))
-        );
+        const modelList = fetchedModels.map((m: any) => ({
+          id: m.id,
+          name: m.id,
+          status: m.status || 'ready',
+        }));
+        setModels(modelList);
+
+        // Auto-select first model if none selected
+        if (!selectedModel && modelList.length > 0) {
+          setSelectedModel(modelList[0].id);
+        }
       }
       setModelStatus(status);
     };
@@ -59,19 +64,24 @@ function App() {
       ]);
 
       if (fetchedModels.length > 0) {
-        setModels(
-          fetchedModels.map((m: any) => ({
-            id: m.id,
-            name: m.id,
-            status: m.status || 'ready',
-          }))
-        );
+        const modelList = fetchedModels.map((m: any) => ({
+          id: m.id,
+          name: m.id,
+          status: m.status || 'ready',
+        }));
+        setModels(modelList);
+
+        // Auto-select first model if currently selected model is not in the list
+        const selectedExists = modelList.some((m: any) => m.id === selectedModel);
+        if (!selectedExists && modelList.length > 0) {
+          setSelectedModel(modelList[0].id);
+        }
       }
       setModelStatus(status);
     }, 30000);
 
     return () => clearInterval(interval);
-  }, [fetchModels, getModelsStatus, setModels]);
+  }, [fetchModels, getModelsStatus, setModels, selectedModel, setSelectedModel]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -172,6 +182,75 @@ function App() {
     }
   };
 
+  const handleModelChange = async (newModel: string) => {
+    // Check if model is already running and healthy
+    const status = modelStatus[newModel];
+    if (status?.status === 'running' && status?.health === 'healthy') {
+      // Model is ready, just switch to it
+      setSelectedModel(newModel);
+      return;
+    }
+
+    // Model needs to be switched, show switching UI
+    try {
+      setIsSwitchingModel(true);
+      setSwitchingInfo({ targetModel: newModel, unloadedModels: [] });
+
+      const result = await switchModel(newModel);
+
+      if (result.status === 'success' || result.status === 'already_loaded') {
+        setSwitchingInfo({
+          targetModel: newModel,
+          unloadedModels: result.unloaded_models || [],
+          estimatedLoadTime: result.estimated_load_time_seconds || 30,
+        });
+
+        // Poll status until model is ready
+        const pollInterval = setInterval(async () => {
+          const status = await getModelsStatus();
+          setModelStatus(status);
+
+          // Check if target model is running and healthy
+          if (status[newModel]?.status === 'running' && status[newModel]?.health === 'healthy') {
+            clearInterval(pollInterval);
+            setIsSwitchingModel(false);
+            setSwitchingInfo(null);
+            setSelectedModel(newModel);
+
+            // Refresh models list
+            const fetchedModels = await fetchModels();
+            if (fetchedModels.length > 0) {
+              setModels(
+                fetchedModels.map((m: any) => ({
+                  id: m.id,
+                  name: m.id,
+                  status: m.status || 'ready',
+                }))
+              );
+            }
+          }
+        }, 3000); // Poll every 3 seconds
+
+        // Timeout after 2 minutes
+        setTimeout(() => {
+          clearInterval(pollInterval);
+          if (isSwitchingModel) {
+            setIsSwitchingModel(false);
+            setSwitchingInfo(null);
+            alert('Model switching timed out. Please check Model Manager for status.');
+          }
+        }, 120000);
+      } else {
+        throw new Error(result.message || 'Failed to switch model');
+      }
+    } catch (error) {
+      console.error('Model switching failed:', error);
+      setIsSwitchingModel(false);
+      setSwitchingInfo(null);
+      alert(`Failed to switch to ${newModel}: ${(error as Error).message}`);
+    }
+  };
+
   return (
     <div className="app">
       {/* Sidebar */}
@@ -212,14 +291,41 @@ function App() {
           <select
             className="model-selector"
             value={selectedModel}
-            onChange={(e) => setSelectedModel(e.target.value)}
+            onChange={(e) => handleModelChange(e.target.value)}
+            disabled={isSwitchingModel}
           >
-            {models.length > 0 ? (
-              models.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.name} {model.status !== 'ready' ? `(${model.status})` : ''}
-                </option>
-              ))
+            {Object.keys(modelStatus).length > 0 ? (
+              <>
+                {/* Running/Ready Models */}
+                <optgroup label="━━━ Ready ━━━">
+                  {Object.entries(modelStatus)
+                    .filter(([_, status]: [string, any]) =>
+                      status.status === 'running' && status.health === 'healthy'
+                    )
+                    .map(([modelName, status]: [string, any]) => (
+                      <option key={modelName} value={modelName}>
+                        ● {modelName} ({status.size_gb}GB)
+                      </option>
+                    ))}
+                </optgroup>
+
+                {/* Available/Stopped Models */}
+                <optgroup label="━━━ Available ━━━">
+                  {Object.entries(modelStatus)
+                    .filter(([_, status]: [string, any]) =>
+                      status.status !== 'running' || status.health !== 'healthy'
+                    )
+                    .map(([modelName, status]: [string, any]) => {
+                      const statusText = status.status === 'loading' ? 'Loading' :
+                                        status.status === 'failed' ? 'Failed' : 'Stopped';
+                      return (
+                        <option key={modelName} value={modelName}>
+                          ○ {modelName} ({status.size_gb}GB) - {statusText}
+                        </option>
+                      );
+                    })}
+                </optgroup>
+              </>
             ) : (
               <>
                 <option value="deepseek-coder-33b-instruct">
@@ -292,26 +398,8 @@ function App() {
                         {status.size_gb && (
                           <span className="model-size">Size: {status.size_gb} GB</span>
                         )}
-                        {status.downloaded !== undefined && (
-                          <span className={`download-status ${
-                            status.downloaded ? 'downloaded' :
-                            status.downloading ? 'downloading' :
-                            'not-downloaded'
-                          }`}>
-                            {status.downloaded ? (
-                              <>
-                                ✓ Downloaded
-                                {status.downloaded_size && ` (${status.downloaded_size})`}
-                              </>
-                            ) : status.downloading ? (
-                              <>
-                                ⏳ Downloading
-                                {status.downloaded_size && ` (${status.downloaded_size})`}
-                              </>
-                            ) : (
-                              '⚠ Not Downloaded'
-                            )}
-                          </span>
+                        {status.downloaded_size && (
+                          <span className="model-size">Disk: {status.downloaded_size}</span>
                         )}
                       </div>
                     </div>
@@ -328,8 +416,7 @@ function App() {
                         <button
                           className="start-model-btn"
                           onClick={() => handleStartModel(modelName)}
-                          disabled={isActionDisabled || !status.downloaded}
-                          title={!status.downloaded ? 'Model not downloaded' : ''}
+                          disabled={isActionDisabled}
                         >
                           Start
                         </button>
@@ -338,6 +425,35 @@ function App() {
                   </div>
                 );
               })}
+            </div>
+          </div>
+        )}
+
+        {/* Model Switching Banner */}
+        {isSwitchingModel && switchingInfo && (
+          <div className="model-switching-banner">
+            <div className="switching-content">
+              <div className="switching-header">
+                <span className="switching-icon">⚙️</span>
+                <span className="switching-text">
+                  Switching to {switchingInfo.targetModel}...
+                </span>
+              </div>
+              {switchingInfo.unloadedModels && switchingInfo.unloadedModels.length > 0 && (
+                <div className="switching-details">
+                  Unloaded: {switchingInfo.unloadedModels.join(', ')}
+                </div>
+              )}
+              {switchingInfo.estimatedLoadTime && (
+                <div className="switching-details">
+                  Estimated time: ~{switchingInfo.estimatedLoadTime}s
+                </div>
+              )}
+              <div className="switching-progress">
+                <div className="progress-bar">
+                  <div className="progress-fill"></div>
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -400,10 +516,10 @@ function App() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Send a message..."
-              disabled={isLoading}
+              placeholder={isSwitchingModel ? "Model is loading, please wait..." : "Send a message..."}
+              disabled={isLoading || isSwitchingModel}
             />
-            <button className="send-btn" type="submit" disabled={isLoading || !input.trim()}>
+            <button className="send-btn" type="submit" disabled={isLoading || isSwitchingModel || !input.trim()}>
               Send
             </button>
           </form>
