@@ -598,6 +598,26 @@ async def get_container_status(container_name: str) -> Dict[str, Any]:
                 uptime_seconds = (datetime.now(started_at.tzinfo) - started_at).total_seconds()
                 if uptime_seconds < 60:
                     result["status"] = "loading"
+                # If running for > 90 seconds but health check still failing, check for errors
+                elif uptime_seconds > 90:
+                    # Get health status
+                    health_success, health_status = await run_docker_command([
+                        "docker", "inspect", "--format", "{{.State.Health.Status}}", container_name
+                    ])
+                    if health_success and health_status.strip() == "starting":
+                        # Still in starting state after 90s - check logs for errors
+                        log_success, logs = await run_docker_command([
+                            "docker", "logs", "--tail", "100", container_name
+                        ])
+                        if log_success:
+                            if "Engine core initialization failed" in logs or "RuntimeError" in logs:
+                                # Check if it's a GPU memory issue
+                                if "CUDA" in logs or "GPU" in logs or "memory" in logs.lower():
+                                    result["status"] = "insufficient_gpu_ram"
+                                    result["error"] = "Insufficient GPU memory - container stuck in starting state"
+                                else:
+                                    result["status"] = "failed"
+                                    result["error"] = "Engine initialization failed - see container logs"
             except:
                 pass
 
@@ -610,11 +630,31 @@ async def get_container_status(container_name: str) -> Dict[str, Any]:
         if success and exit_code.strip() != "0":
             # Check logs for GPU memory error
             log_success, logs = await run_docker_command([
-                "docker", "logs", "--tail", "50", container_name
+                "docker", "logs", "--tail", "100", container_name
             ])
-            if log_success and ("Free memory" in logs or "GPU memory utilization" in logs or "gpu_memory_utilization" in logs):
-                result["status"] = "insufficient_gpu_ram"
-                result["error"] = "Insufficient GPU memory available"
+            if log_success:
+                # Check for explicit GPU memory errors
+                if ("Free memory" in logs or "GPU memory utilization" in logs or "gpu_memory_utilization" in logs or
+                    "OutOfMemory" in logs or "CUDA out of memory" in logs):
+                    result["status"] = "insufficient_gpu_ram"
+                    result["error"] = "Insufficient GPU memory available"
+                # Check for Engine initialization failures (often GPU memory related)
+                elif "Engine core initialization failed" in logs and "RuntimeError" in logs:
+                    # This is likely a GPU memory issue - check if there's enough free memory
+                    gpu_info = await get_gpu_memory_info()
+                    model_metadata = MODEL_METADATA.get(
+                        next((k for k, v in CONTAINER_NAMES.items() if v == container_name), None),
+                        {}
+                    )
+                    required_gb = model_metadata.get("gpu_memory_gb", 0)
+                    if required_gb > gpu_info.get("available_gb", 0) + 5:  # +5GB buffer for overhead
+                        result["status"] = "insufficient_gpu_ram"
+                        result["error"] = f"Engine initialization failed - likely insufficient GPU memory (need {required_gb}GB, have {gpu_info.get('available_gb', 0):.1f}GB available)"
+                    else:
+                        result["status"] = "failed"
+                        result["error"] = "Engine initialization failed - see container logs"
+                else:
+                    result["status"] = "failed"
             else:
                 result["status"] = "failed"
             result["exit_code"] = exit_code.strip()
