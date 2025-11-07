@@ -729,9 +729,21 @@ async def start_model(model_name: str, api_key: str = Depends(verify_api_key)):
     if status["status"] == "running":
         return {"message": f"Model '{model_name}' is already running", "status": "running"}
 
-    # Start the container
-    logger.info(f"Starting model '{model_name}' (container: {container_name})")
-    success, output = await run_docker_command(["docker", "start", container_name])
+    # If container is in failed state, remove it and recreate using docker-compose
+    if status["status"] in ["failed", "insufficient_gpu_ram"]:
+        logger.info(f"Removing failed container '{container_name}' to clear error state")
+        await run_docker_command(["docker", "rm", "-f", container_name])
+        # Use docker-compose to recreate and start
+        logger.info(f"Starting model '{model_name}' (container: {container_name})")
+        success, output = await run_docker_command(["docker", "compose", "up", "-d", container_name])
+    elif status["status"] == "exited":
+        # Just restart if it was cleanly stopped
+        logger.info(f"Starting model '{model_name}' (container: {container_name})")
+        success, output = await run_docker_command(["docker", "start", container_name])
+    else:
+        # Container doesn't exist, use docker-compose to create and start
+        logger.info(f"Starting model '{model_name}' (container: {container_name})")
+        success, output = await run_docker_command(["docker", "compose", "up", "-d", container_name])
 
     if not success:
         raise HTTPException(
