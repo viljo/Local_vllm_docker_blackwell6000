@@ -55,6 +55,15 @@ function App() {
       }
       setModelStatus(status.models);
       setGpuInfo(status.gpu);
+
+      // Clear selectedModel if no running models exist
+      const runningModels = Object.entries(status.models)
+        .filter(([_, modelStatus]: [string, any]) =>
+          modelStatus.status === 'running' && modelStatus.health === 'healthy'
+        );
+      if (runningModels.length === 0 && selectedModel) {
+        setSelectedModel('');
+      }
     };
 
     fetchData();
@@ -82,6 +91,15 @@ function App() {
       }
       setModelStatus(status.models);
       setGpuInfo(status.gpu);
+
+      // Clear selectedModel if no running models exist
+      const runningModels = Object.entries(status.models)
+        .filter(([_, modelStatus]: [string, any]) =>
+          modelStatus.status === 'running' && modelStatus.health === 'healthy'
+        );
+      if (runningModels.length === 0 && selectedModel) {
+        setSelectedModel('');
+      }
     }, 30000);
 
     // Refresh GPU stats every 2 seconds for live updates
@@ -89,6 +107,15 @@ function App() {
       const status = await getModelsStatus();
       setGpuInfo(status.gpu);
       setModelStatus(status.models);
+
+      // Clear selectedModel if no running models exist
+      const runningModels = Object.entries(status.models)
+        .filter(([_, modelStatus]: [string, any]) =>
+          modelStatus.status === 'running' && modelStatus.health === 'healthy'
+        );
+      if (runningModels.length === 0 && selectedModel) {
+        setSelectedModel('');
+      }
     }, 2000);
 
     return () => {
@@ -347,49 +374,22 @@ function App() {
             onChange={(e) => handleModelChange(e.target.value)}
             disabled={isSwitchingModel}
           >
-            {Object.keys(modelStatus).length > 0 ? (
-              <>
-                {/* Running/Ready Models */}
-                <optgroup label="━━━ Ready ━━━">
-                  {Object.entries(modelStatus)
-                    .filter(([_, status]: [string, any]) =>
-                      status.status === 'running' && status.health === 'healthy'
-                    )
-                    .map(([modelName, status]: [string, any]) => (
-                      <option key={modelName} value={modelName}>
-                        ● {modelName} ({status.gpu_memory_gb}GB VRAM)
-                      </option>
-                    ))}
-                </optgroup>
+            {(() => {
+              const runningModels = Object.entries(modelStatus)
+                .filter(([_, status]: [string, any]) =>
+                  status.status === 'running' && status.health === 'healthy'
+                );
 
-                {/* Available/Stopped Models */}
-                <optgroup label="━━━ Available ━━━">
-                  {Object.entries(modelStatus)
-                    .filter(([_, status]: [string, any]) =>
-                      (status.status !== 'running' || status.health !== 'healthy') &&
-                      status.status !== 'not_found'
-                    )
-                    .map(([modelName, status]: [string, any]) => {
-                      const statusText = status.status === 'loading' ? 'Loading' :
-                                        status.status === 'requires_unload' ? 'Requires unload' :
-                                        status.status === 'insufficient_gpu_ram' ? 'Too large' :
-                                        status.status === 'failed' ? 'Failed' : 'Stopped';
-                      return (
-                        <option key={modelName} value={modelName}>
-                          ○ {modelName} ({status.gpu_memory_gb}GB VRAM) - {statusText}
-                        </option>
-                      );
-                    })}
-                </optgroup>
-              </>
-            ) : (
-              <>
-                <option value="deepseek-coder-33b-instruct">
-                  DeepSeek Coder 33B (Python)
+              if (runningModels.length === 0) {
+                return <option value="" disabled>No models loaded</option>;
+              }
+
+              return runningModels.map(([modelName, status]: [string, any]) => (
+                <option key={modelName} value={modelName}>
+                  {modelName} ({status.gpu_memory_gb}GB VRAM)
                 </option>
-                <option value="mistral-7b-v0.1">Mistral 7B (General)</option>
-              </>
-            )}
+              ));
+            })()}
           </select>
 
           <button className="clear-btn" onClick={clearCurrentConversation}>
@@ -424,7 +424,6 @@ function App() {
             </h3>
             <div className="model-list">
               {Object.entries(modelStatus)
-                .filter(([_, status]: [string, any]) => status.status !== 'not_found')
                 .map(([modelName, status]: [string, any]) => {
                 const getStatusDisplay = () => {
                   // Check client-side unloading state first
@@ -444,9 +443,9 @@ function App() {
                     case 'failed':
                       return { icon: '✕', text: 'Failed', color: 'failed' };
                     case 'exited':
-                      return { icon: '○', text: 'Stopped', color: 'stopped' };
+                      return { icon: '', text: '', color: 'stopped' };
                     default:
-                      return { icon: '○', text: 'Not Found', color: 'not_found' };
+                      return { icon: '', text: '', color: 'not_found' };
                   }
                 };
 

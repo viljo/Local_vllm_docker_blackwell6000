@@ -73,6 +73,124 @@ async def lifespan(app: FastAPI):
 
     http_client = httpx.AsyncClient(timeout=300.0)  # 5 minute timeout for long generations
 
+    # Wait for Docker network to be ready
+    await asyncio.sleep(5)
+
+    # Auto-start the largest downloaded model at startup
+    logger.info("Auto-starting largest downloaded model at startup...")
+
+    # Check which models are downloaded
+    downloaded_models = []
+    for model_name, metadata in MODEL_METADATA.items():
+        hf_path = metadata.get('hf_path')
+        if hf_path:
+            download_info = await check_model_downloaded(hf_path)
+            if download_info.get('downloaded'):
+                downloaded_models.append((model_name, metadata['gpu_memory_gb']))
+                logger.info(f"  {model_name}: Downloaded ({metadata['gpu_memory_gb']}GB)")
+            else:
+                logger.info(f"  {model_name}: Not downloaded")
+
+    if downloaded_models:
+        # Start the largest downloaded model with smart memory management
+        largest_model = max(downloaded_models, key=lambda x: x[1])
+        model_name, required_memory_gb = largest_model
+
+        logger.info(f"Auto-starting {model_name} ({required_memory_gb}GB GPU memory)...")
+
+        try:
+            # Check if already running
+            container_name = CONTAINER_NAMES.get(model_name)
+            if not container_name:
+                logger.warning(f"No container mapping found for {model_name}")
+            else:
+                status = await get_container_status(container_name)
+
+                if status["status"] == "running":
+                    logger.info(f"{model_name} is already running")
+                else:
+                    # First check if there are running containers to unload
+                    all_containers = await run_docker_command(["docker", "ps", "--format", "{{.Names}}"])
+                    running_model_containers = []
+
+                    if all_containers[0]:  # success
+                        for line in all_containers[1].strip().split('\n'):
+                            if line.startswith('vllm-') and line != container_name:
+                                # Find model name for this container
+                                for m_name, c_name in CONTAINER_NAMES.items():
+                                    if c_name == line:
+                                        m_metadata = MODEL_METADATA.get(m_name, {})
+                                        running_model_containers.append({
+                                            "name": m_name,
+                                            "container": c_name,
+                                            "gpu_memory_gb": m_metadata.get("gpu_memory_gb", 0)
+                                        })
+                                        break
+
+                    # If there are running containers, stop them first
+                    should_start = True
+                    if running_model_containers:
+                        logger.info(f"Found {len(running_model_containers)} running model(s), unloading before auto-start...")
+                        # Sort by GPU memory (largest first)
+                        running_model_containers.sort(key=lambda m: m["gpu_memory_gb"], reverse=True)
+
+                        for model in running_model_containers:
+                            logger.info(f"Stopping {model['name']} ({model['gpu_memory_gb']}GB)")
+                            await run_docker_command(["docker", "stop", model['container']])
+
+                        # Wait and verify GPU memory is actually released
+                        logger.info("Waiting for GPU memory to be released...")
+                        max_wait_cycles = 20  # 20 * 3 seconds = 60 seconds max
+                        for i in range(max_wait_cycles):
+                            await asyncio.sleep(3)
+                            gpu_info = await get_gpu_memory_info()
+                            available_gb = gpu_info["available_gb"]
+                            logger.info(f"  Check {i+1}/{max_wait_cycles}: {available_gb:.2f}GB free")
+
+                            if available_gb >= required_memory_gb:
+                                logger.info(f"✓ Sufficient memory available: {available_gb:.2f}GB >= {required_memory_gb}GB")
+                                break
+                        else:
+                            # Timeout reached - check if we have enough anyway
+                            if available_gb < required_memory_gb:
+                                logger.error(f"Timeout waiting for memory release. Available: {available_gb:.2f}GB < Required: {required_memory_gb}GB. Skipping auto-start.")
+                                should_start = False
+                    else:
+                        # No running containers, but still check available memory
+                        gpu_info = await get_gpu_memory_info()
+                        available_gb = gpu_info["available_gb"]
+                        logger.info(f"No running models found. Available memory: {available_gb:.2f}GB, Required: {required_memory_gb}GB")
+
+                        if available_gb < required_memory_gb:
+                            logger.error(f"Insufficient GPU memory for {model_name}. Need {required_memory_gb}GB but only {available_gb:.2f}GB available. Skipping auto-start.")
+                            should_start = False
+
+                    # Now start the model if we have enough memory
+                    if not should_start:
+                        logger.warning(f"Skipping auto-start of {model_name} due to insufficient memory")
+                    else:
+                        profile = CONTAINER_PROFILES.get(container_name)
+                        project_dir = os.path.dirname(DOCKER_COMPOSE_FILE)
+                        compose_cmd_base = ["docker", "compose", "-f", DOCKER_COMPOSE_FILE, "-p", "local-llm-service"]
+                        if profile:
+                            compose_cmd_base.extend(["--profile", profile])
+
+                        compose_env = {"PWD": HOST_PROJECT_DIR}
+                        success, output = await run_docker_command(
+                            compose_cmd_base + ["up", "-d", container_name],
+                            cwd=project_dir,
+                            env=compose_env
+                        )
+
+                        if success:
+                            logger.info(f"Successfully started {model_name}")
+                        else:
+                            logger.error(f"Failed to start {model_name}: {output}")
+        except Exception as e:
+            logger.error(f"Error during auto-start: {e}")
+    else:
+        logger.warning("No downloaded models found, skipping auto-start")
+
     yield
 
     # Shutdown
