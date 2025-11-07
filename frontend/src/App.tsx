@@ -310,7 +310,7 @@ function App() {
                     )
                     .map(([modelName, status]: [string, any]) => (
                       <option key={modelName} value={modelName}>
-                        ● {modelName} ({status.size_gb}GB)
+                        ● {modelName} ({status.gpu_memory_gb}GB VRAM)
                       </option>
                     ))}
                 </optgroup>
@@ -326,7 +326,7 @@ function App() {
                                         status.status === 'failed' ? 'Failed' : 'Stopped';
                       return (
                         <option key={modelName} value={modelName}>
-                          ○ {modelName} ({status.size_gb}GB) - {statusText}
+                          ○ {modelName} ({status.gpu_memory_gb}GB VRAM) - {statusText}
                         </option>
                       );
                     })}
@@ -401,8 +401,8 @@ function App() {
                         <span className="model-description">{status.description}</span>
                       )}
                       <div className="model-meta">
-                        {status.size_gb && (
-                          <span className="model-size">Size: {status.size_gb} GB</span>
+                        {status.gpu_memory_gb && (
+                          <span className="model-size">VRAM: {status.gpu_memory_gb} GB</span>
                         )}
                         {status.downloaded_size && (
                           <span className="model-size">Disk: {status.downloaded_size}</span>
