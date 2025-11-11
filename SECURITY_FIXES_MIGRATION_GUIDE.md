@@ -112,6 +112,47 @@ echo "API_KEY=sk-local-YOUR-GENERATED-KEY-HERE" >> .env
 - Application fails on startup if API key is not set or is weak
 - Clear error messages guide users to generate secure keys
 
+### 7. ✅ Enhanced Installation Script
+
+**New Feature:** The `run.sh` script now includes intelligent API key management:
+
+**Automatic Detection:**
+- Checks if `.env` file exists
+- Detects missing or weak API keys
+- Identifies compromised keys from previous versions
+
+**Interactive Generation:**
+- Prompts user to generate new key if weak key detected
+- Uses Python's `secrets` module for cryptographic security
+- Falls back to `openssl` if Python unavailable
+- Automatically updates `.env` file
+
+**Security Validation:**
+- Validates key length (minimum 32 hex characters after prefix)
+- Checks against known weak/compromised keys:
+  - `sk-local-dev-key`
+  - `sk-local-your-secret-key-here`
+  - `sk-local-2ac9387d659f7131f38d83e5f7bee469` (compromised)
+  - Any key shorter than required minimum
+
+**Example Usage:**
+```bash
+./run.sh start
+
+# If weak key detected, you'll see:
+# ⚠ WARNING: Weak or compromised API key detected!
+#   Current key: sk-local-dev-key
+#
+# This key is either:
+#   • A default/example key from .env.example
+#   • A previously compromised key
+#   • Too short to be secure
+#
+# Generate a new secure API key? [Y/n]:
+```
+
+Simply press Enter (or type 'y') and the script handles everything automatically!
+
 ---
 
 ## Migration Steps
@@ -125,7 +166,22 @@ git checkout claude/review-mr-security-issues-011CV1oKTykTJxUaeAhNYimG
 git pull
 ```
 
-### Step 2: Generate New API Key
+### Step 2: Generate New API Key (Automatic or Manual)
+
+**Option A: Automatic (Recommended) - Use the run.sh script:**
+
+```bash
+# The run.sh script will automatically detect weak/missing API keys
+./run.sh start
+```
+
+The script will:
+- ✅ Detect if you have a weak or compromised API key
+- ✅ Prompt you to generate a new one automatically
+- ✅ Update your .env file with the new key
+- ✅ Start the services with the secure key
+
+**Option B: Manual - Generate yourself:**
 
 ```bash
 # Generate a secure API key
@@ -134,7 +190,7 @@ python3 -c "import secrets; print('sk-local-' + secrets.token_hex(32))"
 
 Copy the generated key (it will look like: `sk-local-a320fe99954089a09afe89a29a0e262597bacbd0ada454958f4038504b709e1f`)
 
-### Step 3: Update Environment Configuration
+### Step 3: Update Environment Configuration (If doing manual setup)
 
 Create or update your `.env` file in the project root:
 
@@ -167,10 +223,19 @@ GENERAL_MAX_BATCHED_TOKENS=8192
 LOG_LEVEL=INFO
 ```
 
+**Note:** If using the automatic method (Option A), skip this step as the script handles it for you.
+
 ### Step 4: Rebuild Docker Containers
 
 The frontend no longer needs API keys, so you must rebuild:
 
+**Option A: Using run.sh (Recommended):**
+```bash
+# The run.sh script handles everything automatically
+./run.sh start
+```
+
+**Option B: Manual Docker commands:**
 ```bash
 # Stop existing containers
 docker-compose down
