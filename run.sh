@@ -55,6 +55,44 @@ fi
 # Check .env file
 print_section "Checking Configuration"
 
+# Function to generate secure API key
+generate_api_key() {
+    if command -v python3 &> /dev/null; then
+        # Preferred: Use Python's secrets module (cryptographically secure)
+        python3 -c "import secrets; print('sk-local-' + secrets.token_hex(32))"
+    elif command -v openssl &> /dev/null; then
+        # Fallback: Use openssl (but only 32 hex chars = 128 bits)
+        echo "sk-local-$(openssl rand -hex 32)"
+    else
+        echo -e "${RED}✗ Cannot generate API key: neither python3 nor openssl found${NC}"
+        exit 1
+    fi
+}
+
+# List of known weak/compromised API keys
+WEAK_KEYS=(
+    "sk-local-dev-key"
+    "sk-local-your-secret-key-here"
+    "sk-local-CHANGE-THIS-TO-A-SECURE-RANDOM-KEY"
+    "sk-local-2ac9387d659f7131f38d83e5f7bee469"  # Compromised key from old code
+)
+
+# Check if API key is weak
+is_weak_api_key() {
+    local key=$1
+    for weak_key in "${WEAK_KEYS[@]}"; do
+        if [ "$key" = "$weak_key" ]; then
+            return 0  # true - it is weak
+        fi
+    done
+    # Also check if key is too short (less than 32 characters after prefix)
+    local key_without_prefix=${key#sk-local-}
+    if [ ${#key_without_prefix} -lt 32 ]; then
+        return 0  # true - it is weak
+    fi
+    return 1  # false - not weak
+}
+
 if [ ! -f .env ]; then
     echo -e "${YELLOW}⚠ .env file not found. Creating from template...${NC}"
 
@@ -62,7 +100,8 @@ if [ ! -f .env ]; then
         cp .env.example .env
 
         # Generate API key
-        API_KEY="sk-local-$(openssl rand -hex 16)"
+        echo "Generating secure API key..."
+        API_KEY=$(generate_api_key)
 
         # Update .env with generated key
         if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -73,16 +112,65 @@ if [ ! -f .env ]; then
 
         echo -e "${GREEN}✓ Created .env file with generated API key${NC}"
         echo -e "${YELLOW}  API Key: ${API_KEY}${NC}"
-        echo -e "${YELLOW}  You can change settings in .env file${NC}"
+        echo -e "${YELLOW}  Saved to .env file${NC}"
     else
         echo -e "${RED}✗ .env.example not found${NC}"
         exit 1
     fi
 else
     echo -e "${GREEN}✓ .env file exists${NC}"
-    API_KEY=$(grep "^API_KEY=" .env | cut -d= -f2)
-    echo -e "  API Key: ${API_KEY}"
+
+    # Extract API key from .env
+    API_KEY=$(grep "^API_KEY=" .env 2>/dev/null | cut -d= -f2)
+
+    if [ -z "$API_KEY" ]; then
+        echo -e "${RED}✗ No API_KEY found in .env file${NC}"
+        echo "Generating new API key..."
+        API_KEY=$(generate_api_key)
+        echo "API_KEY=${API_KEY}" >> .env
+        echo -e "${GREEN}✓ Generated and saved new API key${NC}"
+        echo -e "${YELLOW}  API Key: ${API_KEY}${NC}"
+    elif is_weak_api_key "$API_KEY"; then
+        echo -e "${RED}⚠ WARNING: Weak or compromised API key detected!${NC}"
+        echo -e "${YELLOW}  Current key: ${API_KEY}${NC}"
+        echo ""
+        echo "This key is either:"
+        echo "  • A default/example key from .env.example"
+        echo "  • A previously compromised key"
+        echo "  • Too short to be secure"
+        echo ""
+        echo -n "Generate a new secure API key? [Y/n]: "
+        read -r response
+
+        # Default to yes if empty response
+        response=${response:-y}
+
+        if [[ "$response" =~ ^[Yy]$ ]] || [ -z "$response" ]; then
+            # Generate new key
+            NEW_API_KEY=$(generate_api_key)
+
+            # Update .env file
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+                sed -i '' "s/API_KEY=.*/API_KEY=${NEW_API_KEY}/" .env
+            else
+                sed -i "s/API_KEY=.*/API_KEY=${NEW_API_KEY}/" .env
+            fi
+
+            echo -e "${GREEN}✓ Generated new secure API key${NC}"
+            echo -e "${YELLOW}  New API Key: ${NEW_API_KEY}${NC}"
+            echo -e "${YELLOW}  Updated in .env file${NC}"
+            API_KEY="$NEW_API_KEY"
+        else
+            echo -e "${YELLOW}⚠ Keeping existing API key (not recommended)${NC}"
+        fi
+    else
+        echo -e "${GREEN}✓ API key looks secure${NC}"
+        # Only show first/last 8 chars for security
+        echo -e "  API Key: ${API_KEY:0:10}...${API_KEY: -8}"
+    fi
 fi
+
+echo ""
 
 # Parse command line arguments
 ACTION="${1:-start}"

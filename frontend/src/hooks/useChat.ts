@@ -14,7 +14,7 @@ const getApiBaseUrl = () => {
 };
 
 const API_BASE_URL = getApiBaseUrl();
-const API_KEY = import.meta.env.VITE_API_KEY || 'sk-local-2ac9387d659f7131f38d83e5f7bee469';
+// API key is not needed in frontend - router handles authentication
 
 export const useChat = () => {
   const { addMessage, updateLastMessage, setIsLoading, selectedModel } = useChatStore();
@@ -57,7 +57,6 @@ export const useChat = () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${API_KEY}`,
           },
           body: JSON.stringify({
             model: selectedModel,
@@ -116,11 +115,7 @@ export const useChat = () => {
 
   const fetchModels = useCallback(async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/models`, {
-        headers: {
-          'Authorization': `Bearer ${API_KEY}`,
-        },
-      });
+      const response = await fetch(`${API_BASE_URL}/models`);
       const data = await response.json();
       return data.data || [];
     } catch (error) {
