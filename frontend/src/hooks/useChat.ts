@@ -214,5 +214,23 @@ export const useChat = () => {
     }
   }, []);
 
-  return { sendMessage, fetchModels, getModelsStatus, startModel, stopModel, switchModel };
+  const getApiInfo = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/info`);
+      const data = await response.json();
+      return {
+        apiKey: data.api_key,
+        baseUrl: `http://${window.location.hostname}:${data.router_port}/v1`,
+      };
+    } catch (error) {
+      console.error('Error fetching API info:', error);
+      // Fallback to defaults if fetch fails
+      return {
+        apiKey: API_KEY,
+        baseUrl: API_BASE_URL,
+      };
+    }
+  }, []);
+
+  return { sendMessage, fetchModels, getModelsStatus, startModel, stopModel, switchModel, getApiInfo };
 };

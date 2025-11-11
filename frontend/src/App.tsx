@@ -18,7 +18,7 @@ function App() {
     clearCurrentConversation,
   } = useChatStore();
 
-  const { sendMessage, fetchModels, getModelsStatus, stopModel, switchModel } = useChat();
+  const { sendMessage, fetchModels, getModelsStatus, stopModel, switchModel, getApiInfo } = useChat();
   const [input, setInput] = useState('');
   const [modelStatus, setModelStatus] = useState<Record<string, any>>({});
   const [gpuInfo, setGpuInfo] = useState<any>({});
@@ -27,6 +27,7 @@ function App() {
   const [isSwitchingModel, setIsSwitchingModel] = useState(false);
   const [switchingInfo, setSwitchingInfo] = useState<any>(null);
   const [showApiInfo, setShowApiInfo] = useState(false);
+  const [apiInfo, setApiInfo] = useState<{ apiKey: string; baseUrl: string }>({ apiKey: '', baseUrl: '' });
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const currentConv =
@@ -35,9 +36,10 @@ function App() {
   // Fetch models and status on mount
   useEffect(() => {
     const fetchData = async () => {
-      const [fetchedModels, status] = await Promise.all([
+      const [fetchedModels, status, info] = await Promise.all([
         fetchModels(),
         getModelsStatus(),
+        getApiInfo(),
       ]);
 
       if (fetchedModels.length > 0) {
@@ -55,6 +57,7 @@ function App() {
       }
       setModelStatus(status.models);
       setGpuInfo(status.gpu);
+      setApiInfo(info);
 
       // Clear selectedModel if no running models exist
       const runningModels = Object.entries(status.models)
@@ -68,11 +71,12 @@ function App() {
 
     fetchData();
 
-    // Refresh models and status every 30 seconds
+    // Refresh models, status, and API info every 30 seconds
     const modelInterval = setInterval(async () => {
-      const [fetchedModels, status] = await Promise.all([
+      const [fetchedModels, status, info] = await Promise.all([
         fetchModels(),
         getModelsStatus(),
+        getApiInfo(),
       ]);
 
       if (fetchedModels.length > 0) {
@@ -91,6 +95,7 @@ function App() {
       }
       setModelStatus(status.models);
       setGpuInfo(status.gpu);
+      setApiInfo(info);
 
       // Clear selectedModel if no running models exist
       const runningModels = Object.entries(status.models)
@@ -122,7 +127,7 @@ function App() {
       clearInterval(modelInterval);
       clearInterval(gpuInterval);
     };
-  }, [fetchModels, getModelsStatus, setModels, selectedModel, setSelectedModel]);
+  }, [fetchModels, getModelsStatus, getApiInfo, setModels, selectedModel, setSelectedModel]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -507,13 +512,14 @@ function App() {
               <div className="api-info-item">
                 <label className="api-info-label">Base URL:</label>
                 <div className="api-info-value">
-                  <code>{`http://${window.location.hostname}:8080/v1`}</code>
+                  <code>{apiInfo.baseUrl || 'Loading...'}</code>
                   <button
                     className="copy-btn"
                     onClick={() => {
-                      navigator.clipboard.writeText(`http://${window.location.hostname}:8080/v1`);
+                      navigator.clipboard.writeText(apiInfo.baseUrl);
                       alert('URL copied to clipboard!');
                     }}
+                    disabled={!apiInfo.baseUrl}
                   >
                     Copy
                   </button>
@@ -522,13 +528,14 @@ function App() {
               <div className="api-info-item">
                 <label className="api-info-label">API Key:</label>
                 <div className="api-info-value">
-                  <code>sk-local-2ac9387d659f7131f38d83e5f7bee469</code>
+                  <code>{apiInfo.apiKey || 'Loading...'}</code>
                   <button
                     className="copy-btn"
                     onClick={() => {
-                      navigator.clipboard.writeText('sk-local-2ac9387d659f7131f38d83e5f7bee469');
+                      navigator.clipboard.writeText(apiInfo.apiKey);
                       alert('API key copied to clipboard!');
                     }}
+                    disabled={!apiInfo.apiKey}
                   >
                     Copy
                   </button>
