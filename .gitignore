@@ -70,3 +70,18 @@ htmlcov/
 
 # OS
 Thumbs.db
+
+# Screenshots and debugging artifacts
+*.png
+*.jpg
+*.jpeg
+
+# Working documents and planning notes
+BUGFIX_*.md
+DISCUSSION_*.md
+FEATURE_COMPLETE_*.md
+IMPLEMENTATION_PLAN_*.md
+MODEL_LOADING_OPTIMIZATION.md
+SPEC_GPU_MEMORY_ALLOCATION.md
+TEST_MODEL_SWITCHING.md
+GPU_EXCLUSIVE_SETUP.md
