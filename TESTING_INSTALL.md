@@ -269,7 +269,48 @@ sudo reboot
 
 ### Issue: "Service fails to start"
 
-**Solution:**
+**Common Causes**:
+
+#### 1. Read-only filesystem error: `mkdir /root/.docker: read-only file system`
+
+This error occurs when systemd's security settings prevent Docker from creating necessary directories.
+
+**Quick Fix:**
+```bash
+# Run the fix script
+sudo ./fix_systemd_service.sh
+```
+
+This will update the service file to remove the conflicting security settings.
+
+#### 2. Missing PWD environment variable
+
+If you see errors related to file paths or template mounting, the service might be missing the `PWD` environment variable.
+
+**Check logs:**
+```bash
+sudo journalctl -xeu local-llm-service -n 50
+```
+
+**Manual Fix:**
+```bash
+# Edit the service file
+sudo nano /etc/systemd/system/local-llm-service.service
+
+# Ensure this line is in the [Service] section:
+Environment="PWD=/opt/local_llm_service"
+
+# Remove these lines if present (they conflict with Docker):
+# ProtectSystem=strict
+# ProtectHome=yes
+# ReadWritePaths=/opt/local_llm_service
+
+# Reload and restart
+sudo systemctl daemon-reload
+sudo systemctl restart local-llm-service
+```
+
+**Other Diagnostic Commands:**
 ```bash
 # Check detailed logs
 sudo journalctl -u local-llm-service -n 100 --no-pager
@@ -279,6 +320,40 @@ sudo systemctl status docker
 
 # Verify NVIDIA Container Toolkit
 docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi
+
+# Try running docker compose manually
+cd /opt/local_llm_service
+sudo docker compose up -d
+```
+
+### Issue: "No models visible in Model Manager"
+
+**Symptom**: WebUI loads but Model Manager shows no models, or you see 401 Unauthorized errors in logs
+
+**Root Cause**: Missing `.env` file with API key configuration
+
+**Quick Fix:**
+```bash
+# Run the fix script
+cd /home/asvil/git/local_llm_service
+sudo ./fix_env.sh
+```
+
+This will create a `.env` file with a randomly generated API key and restart the service.
+
+**Manual Fix:**
+```bash
+# Copy the template
+sudo cp /opt/local_llm_service/.env.example /opt/local_llm_service/.env
+
+# Generate a random API key
+RANDOM_KEY="sk-local-$(openssl rand -hex 16)"
+
+# Update the .env file
+sudo sed -i "s/sk-local-your-secret-key-here/$RANDOM_KEY/" /opt/local_llm_service/.env
+
+# Restart service
+sudo systemctl restart local-llm-service
 ```
 
 ### Issue: "Containers stuck in 'starting' state"

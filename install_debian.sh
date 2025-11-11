@@ -25,6 +25,7 @@ NC='\033[0m' # No Color
 
 # Installation configuration
 INSTALL_DIR="/opt/local_llm_service"
+MODELS_DIR="/ssd/LLMs"
 SERVICE_NAME="local-llm-service"
 REPO_URL="https://github.com/viljo/Local_vllm_docker_blackwell6000.git"
 BRANCH="002-gpt-oss-models-dynamic-reload"
@@ -197,11 +198,108 @@ else
     print_success "Repository cloned to $INSTALL_DIR"
 fi
 
+# Create or update .env file
+if [[ ! -f "$INSTALL_DIR/.env" ]]; then
+    print_info "Creating .env file from template..."
+    cp "$INSTALL_DIR/.env.example" "$INSTALL_DIR/.env"
+    # Generate a random API key
+    RANDOM_API_KEY="sk-local-$(openssl rand -hex 16)"
+    sed -i "s/sk-local-your-secret-key-here/$RANDOM_API_KEY/" "$INSTALL_DIR/.env"
+    print_success ".env file created with generated API key: $RANDOM_API_KEY"
+    echo ""
+    echo "  IMPORTANT: Save this API key for accessing the service:"
+    echo "  $RANDOM_API_KEY"
+    echo ""
+else
+    print_info "Existing .env file found, merging new variables..."
+
+    # Backup existing .env
+    cp "$INSTALL_DIR/.env" "$INSTALL_DIR/.env.backup"
+
+    # Preserve existing API key
+    EXISTING_API_KEY=$(grep "^API_KEY=" "$INSTALL_DIR/.env" | cut -d'=' -f2-)
+
+    # Copy new template
+    cp "$INSTALL_DIR/.env.example" "$INSTALL_DIR/.env.new"
+
+    # Restore existing API key if found
+    if [[ -n "$EXISTING_API_KEY" ]]; then
+        sed -i "s/sk-local-your-secret-key-here/$EXISTING_API_KEY/" "$INSTALL_DIR/.env.new"
+    else
+        # Generate new API key if none exists
+        RANDOM_API_KEY="sk-local-$(openssl rand -hex 16)"
+        sed -i "s/sk-local-your-secret-key-here/$RANDOM_API_KEY/" "$INSTALL_DIR/.env.new"
+    fi
+
+    # Copy any custom values from old .env that aren't in the new template
+    # (this preserves user customizations)
+    while IFS='=' read -r key value; do
+        if [[ ! "$key" =~ ^# ]] && [[ -n "$key" ]]; then
+            # Check if this key exists in new template
+            if ! grep -q "^${key}=" "$INSTALL_DIR/.env.new" 2>/dev/null; then
+                echo "${key}=${value}" >> "$INSTALL_DIR/.env.new"
+            fi
+        fi
+    done < "$INSTALL_DIR/.env.backup"
+
+    # Replace old .env with merged version
+    mv "$INSTALL_DIR/.env.new" "$INSTALL_DIR/.env"
+
+    print_success ".env file updated with new variables (backup saved as .env.backup)"
+fi
+
 # Set ownership to root
 chown -R root:root "$INSTALL_DIR"
 
 #==============================================================================
-# Step 6: Create systemd service
+# Step 6: Setup models directory
+#==============================================================================
+print_info "Setting up models directory at $MODELS_DIR..."
+
+# Create models directory if it doesn't exist
+mkdir -p "$MODELS_DIR"
+
+# Set ownership
+chown -R root:root "$MODELS_DIR"
+
+print_success "Models directory created at $MODELS_DIR"
+
+#==============================================================================
+# Step 7: Copy models from local dev directory if available
+#==============================================================================
+print_info "Checking for existing models to copy..."
+
+# Check if we're installing from the dev directory and if models exist
+if [[ -d "$SCRIPT_DIR/models" ]] && [[ -d "$SCRIPT_DIR/.git" ]]; then
+    MODEL_COUNT=$(find "$SCRIPT_DIR/models" -type d -name "models--*" 2>/dev/null | wc -l)
+
+    if [[ $MODEL_COUNT -gt 0 ]]; then
+        print_info "Found $MODEL_COUNT model(s) in dev directory, copying to $MODELS_DIR..."
+        print_info "This may take several minutes for large models..."
+
+        # Copy models with progress
+        rsync -av --info=progress2 "$SCRIPT_DIR/models/" "$MODELS_DIR/"
+
+        print_success "Models copied successfully ($MODEL_COUNT models)"
+    else
+        print_info "No models found in dev directory, models will be downloaded on first use"
+    fi
+else
+    print_info "No local models directory found, models will be downloaded on first use"
+fi
+
+#==============================================================================
+# Step 8: Update docker-compose.yml to use /ssd/LLMs
+#==============================================================================
+print_info "Configuring docker-compose.yml to use $MODELS_DIR..."
+
+# Update docker-compose.yml to mount /ssd/LLMs instead of ./models
+sed -i "s|./models:/models|$MODELS_DIR:/models|g" "$INSTALL_DIR/docker-compose.yml"
+
+print_success "docker-compose.yml configured"
+
+#==============================================================================
+# Step 9: Create systemd service
 #==============================================================================
 print_info "Creating systemd service..."
 
@@ -216,16 +314,13 @@ Requires=docker.service
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=$INSTALL_DIR
+Environment="PWD=$INSTALL_DIR"
 ExecStartPre=/usr/bin/docker compose down
+ExecStartPre=/usr/bin/docker compose build webui-frontend
 ExecStart=/usr/bin/docker compose up -d
 ExecStop=/usr/bin/docker compose down
 Restart=on-failure
 RestartSec=10s
-
-# Security settings
-ProtectSystem=strict
-ProtectHome=yes
-ReadWritePaths=$INSTALL_DIR
 
 [Install]
 WantedBy=multi-user.target
@@ -234,7 +329,19 @@ EOF
 print_success "Systemd service created at /etc/systemd/system/${SERVICE_NAME}.service"
 
 #==============================================================================
-# Step 7: Enable and start service
+# Step 10: Build containers with correct API key
+#==============================================================================
+print_info "Building containers with correct API key from .env..."
+
+cd "$INSTALL_DIR"
+
+# Build frontend container to ensure API key is baked in correctly
+docker compose build webui-frontend
+
+print_success "Frontend container built with correct API key"
+
+#==============================================================================
+# Step 11: Enable and start service
 #==============================================================================
 print_info "Enabling and starting service..."
 
@@ -250,7 +357,7 @@ systemctl start "$SERVICE_NAME"
 print_success "Service enabled and started"
 
 #==============================================================================
-# Step 8: Wait for services to be ready
+# Step 12: Wait for services to be ready
 #==============================================================================
 print_info "Waiting for services to start..."
 
@@ -279,6 +386,7 @@ echo "========================================================================"
 echo ""
 echo "Installation Details:"
 echo "  - Install directory: $INSTALL_DIR"
+echo "  - Models directory: $MODELS_DIR"
 echo "  - Service name: $SERVICE_NAME"
 echo "  - Autostart: Enabled"
 echo ""

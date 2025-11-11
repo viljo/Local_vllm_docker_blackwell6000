@@ -23,6 +23,7 @@ NC='\033[0m' # No Color
 
 # Installation configuration
 INSTALL_DIR="/opt/local_llm_service"
+MODELS_DIR="/ssd/LLMs"
 SERVICE_NAME="local-llm-service"
 KEEP_DATA=false
 
@@ -75,9 +76,9 @@ echo "  - All running containers"
 echo ""
 
 if [[ "$KEEP_DATA" == true ]]; then
-    print_info "Model data will be preserved (--keep-data flag set)"
+    print_info "Model data in $MODELS_DIR will be preserved (--keep-data flag set)"
 else
-    print_warning "Model data in $INSTALL_DIR/models will be DELETED"
+    print_warning "Model data in $MODELS_DIR will be DELETED"
 fi
 
 echo ""
@@ -134,22 +135,32 @@ fi
 print_info "Removing installation directory..."
 
 if [[ -d "$INSTALL_DIR" ]]; then
-    if [[ "$KEEP_DATA" == true ]]; then
-        # Backup models directory
-        if [[ -d "$INSTALL_DIR/models" ]]; then
-            BACKUP_DIR="$INSTALL_DIR.backup-$(date +%Y%m%d-%H%M%S)"
-            mkdir -p "$BACKUP_DIR"
-            mv "$INSTALL_DIR/models" "$BACKUP_DIR/"
-            print_success "Model data backed up to $BACKUP_DIR/models"
-        fi
-    fi
-
     rm -rf "$INSTALL_DIR"
     print_success "Installation directory removed"
 fi
 
 #==============================================================================
-# Step 5: Clean up Docker resources (optional)
+# Step 5: Handle models directory
+#==============================================================================
+if [[ -d "$MODELS_DIR" ]]; then
+    if [[ "$KEEP_DATA" == true ]]; then
+        print_info "Keeping model data in $MODELS_DIR (--keep-data flag set)"
+        print_success "Model data preserved at $MODELS_DIR"
+    else
+        read -p "Delete all models in $MODELS_DIR? (yes/NO): " -r
+        echo
+        if [[ $REPLY =~ ^[Yy][Ee][Ss]$ ]]; then
+            print_info "Removing models directory..."
+            rm -rf "$MODELS_DIR"
+            print_success "Models directory removed"
+        else
+            print_info "Keeping models directory at $MODELS_DIR"
+        fi
+    fi
+fi
+
+#==============================================================================
+# Step 6: Clean up Docker resources (optional)
 #==============================================================================
 print_info "Cleaning up Docker resources..."
 
@@ -184,8 +195,8 @@ print_success "Local vLLM Service uninstalled successfully!"
 echo "========================================================================"
 echo ""
 
-if [[ "$KEEP_DATA" == true ]] && [[ -n "$BACKUP_DIR" ]]; then
-    echo "Model data preserved at: $BACKUP_DIR/models"
+if [[ "$KEEP_DATA" == true ]] && [[ -d "$MODELS_DIR" ]]; then
+    echo "Model data preserved at: $MODELS_DIR"
     echo ""
 fi
 

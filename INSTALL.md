@@ -28,8 +28,12 @@ This automated script will:
 2. ✅ Install Docker and Docker Compose
 3. ✅ Install NVIDIA Container Toolkit
 4. ✅ Clone/copy service to `/opt/local_llm_service`
-5. ✅ Create systemd service for autostart
-6. ✅ Start the service
+5. ✅ Create `.env` file with generated API key
+6. ✅ Setup models directory at `/ssd/LLMs`
+7. ✅ Copy existing models from dev directory (if installing from git repo)
+8. ✅ Configure docker-compose.yml to use `/ssd/LLMs`
+9. ✅ Create systemd service for autostart
+10. ✅ Start the service
 
 ### Installation Process
 
@@ -125,6 +129,7 @@ Requires=docker.service
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/opt/local_llm_service
+Environment="PWD=/opt/local_llm_service"
 ExecStartPre=/usr/bin/docker compose down
 ExecStart=/usr/bin/docker compose up -d
 ExecStop=/usr/bin/docker compose down
@@ -168,11 +173,15 @@ docker compose logs -f
 ### First Run
 
 On first run, the service will:
-1. Auto-start the largest downloaded model (gpt-oss-120b)
-2. Download models if not present (this may take time)
+1. Auto-start the largest downloaded model (if any models were copied during installation)
+2. Download models on-demand when you start them in the WebUI
 3. Initialize GPU memory allocation
 
-Wait 1-2 minutes for models to fully load.
+**Note:**
+- Models are stored in `/ssd/LLMs` for fast access and large storage capacity
+- If you run the installer from the dev directory (`/home/asvil/git/local_llm_service`), any existing models will be automatically copied to `/ssd/LLMs` to save download time
+
+Wait 1-2 minutes for models to fully load after starting them.
 
 ## Service Management
 
@@ -292,6 +301,28 @@ The service will auto-unload models to free memory. Check logs:
 docker compose logs vllm-router | grep -i "memory\|unload"
 ```
 
+### WebUI Shows 401 Authentication Errors
+
+If the WebUI shows "Error: HTTP error! status: 401" when sending messages:
+
+**Cause**: API key mismatch between frontend and backend. The frontend has the API key baked in at build time.
+
+**Solution**: Rebuild the frontend container:
+
+```bash
+cd /opt/local_llm_service
+sudo docker compose build webui-frontend
+sudo docker compose up -d webui-frontend
+```
+
+**Prevention**: The installer scripts now automatically rebuild the frontend. If you manually change the API key in `.env`, always rebuild:
+
+```bash
+# After changing API_KEY in .env
+sudo docker compose build webui-frontend
+sudo docker compose up -d webui-frontend
+```
+
 ### Port Already in Use
 
 If ports 3000 or 8080 are in use, edit `/opt/local_llm_service/docker-compose.yml`:
@@ -333,19 +364,37 @@ sudo systemctl restart local-llm-service
 
 ## Advanced Configuration
 
-### Change Models Directory
+### Models Storage Location
 
-Edit `/opt/local_llm_service/docker-compose.yml`:
+By default, models are stored in `/ssd/LLMs`. This is configured during installation.
 
-```yaml
-volumes:
-  models:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: /path/to/your/models  # Change this
-```
+To change the models directory:
+
+1. Stop the service:
+   ```bash
+   sudo systemctl stop local-llm-service
+   ```
+
+2. Edit `/opt/local_llm_service/docker-compose.yml`:
+   ```bash
+   sudo nano /opt/local_llm_service/docker-compose.yml
+   ```
+
+3. Find all lines with `/ssd/LLMs:/models` and change to your desired path:
+   ```yaml
+   volumes:
+     - /your/new/path:/models  # Change this
+   ```
+
+4. Move existing models (optional):
+   ```bash
+   sudo mv /ssd/LLMs/* /your/new/path/
+   ```
+
+5. Restart the service:
+   ```bash
+   sudo systemctl restart local-llm-service
+   ```
 
 ### Configure GPU Memory Limit
 

@@ -5,7 +5,16 @@
 
 set -e
 
-API_KEY="${API_KEY:-sk-local-2ac9387d659f7131f38d83e5f7bee469}"
+# Load API key from .env file if not set in environment
+if [[ -z "$API_KEY" ]]; then
+    if [[ -f .env ]]; then
+        API_KEY=$(grep "^API_KEY=" .env | cut -d'=' -f2-)
+    else
+        echo "Error: .env file not found and API_KEY not set in environment"
+        exit 1
+    fi
+fi
+
 API_URL="http://localhost:8080/v1"
 
 echo "========================================="
