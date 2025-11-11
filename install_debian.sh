@@ -47,6 +47,44 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# Function to generate secure API key
+generate_api_key() {
+    if command -v python3 &> /dev/null; then
+        # Preferred: Use Python's secrets module (cryptographically secure)
+        python3 -c "import secrets; print('sk-local-' + secrets.token_hex(32))"
+    elif command -v openssl &> /dev/null; then
+        # Fallback: Use openssl with 64 hex chars (256 bits)
+        echo "sk-local-$(openssl rand -hex 32)"
+    else
+        print_error "Cannot generate API key: neither python3 nor openssl found"
+        exit 1
+    fi
+}
+
+# List of known weak/compromised API keys
+WEAK_KEYS=(
+    "sk-local-dev-key"
+    "sk-local-your-secret-key-here"
+    "sk-local-CHANGE-THIS-TO-A-SECURE-RANDOM-KEY"
+    "sk-local-2ac9387d659f7131f38d83e5f7bee469"  # Compromised key from old code
+)
+
+# Check if API key is weak
+is_weak_api_key() {
+    local key=$1
+    for weak_key in "${WEAK_KEYS[@]}"; do
+        if [ "$key" = "$weak_key" ]; then
+            return 0  # true - it is weak
+        fi
+    done
+    # Also check if key is too short (less than 32 characters after prefix)
+    local key_without_prefix=${key#sk-local-}
+    if [ ${#key_without_prefix} -lt 32 ]; then
+        return 0  # true - it is weak
+    fi
+    return 1  # false - not weak
+}
+
 # Check if running as root
 if [[ $EUID -ne 0 ]]; then
    print_error "This script must be run as root (use sudo)"
@@ -202,13 +240,19 @@ fi
 if [[ ! -f "$INSTALL_DIR/.env" ]]; then
     print_info "Creating .env file from template..."
     cp "$INSTALL_DIR/.env.example" "$INSTALL_DIR/.env"
-    # Generate a random API key
-    RANDOM_API_KEY="sk-local-$(openssl rand -hex 16)"
-    sed -i "s/sk-local-your-secret-key-here/$RANDOM_API_KEY/" "$INSTALL_DIR/.env"
-    print_success ".env file created with generated API key: $RANDOM_API_KEY"
+
+    # Generate a secure API key
+    print_info "Generating cryptographically secure API key..."
+    RANDOM_API_KEY=$(generate_api_key)
+    sed -i "s/API_KEY=.*/API_KEY=$RANDOM_API_KEY/" "$INSTALL_DIR/.env"
+
+    print_success ".env file created with generated API key"
     echo ""
-    echo "  IMPORTANT: Save this API key for accessing the service:"
-    echo "  $RANDOM_API_KEY"
+    print_success "IMPORTANT: Save this API key for programmatic access:"
+    echo -e "  ${GREEN}$RANDOM_API_KEY${NC}"
+    echo ""
+    print_info "Note: WebUI browser access does not require this key (BFF pattern)"
+    print_info "External tools/scripts will need this key for API access"
     echo ""
 else
     print_info "Existing .env file found, merging new variables..."
@@ -222,13 +266,47 @@ else
     # Copy new template
     cp "$INSTALL_DIR/.env.example" "$INSTALL_DIR/.env.new"
 
-    # Restore existing API key if found
-    if [[ -n "$EXISTING_API_KEY" ]]; then
-        sed -i "s/sk-local-your-secret-key-here/$EXISTING_API_KEY/" "$INSTALL_DIR/.env.new"
+    # Check if existing API key is weak/compromised
+    if [[ -n "$EXISTING_API_KEY" ]] && is_weak_api_key "$EXISTING_API_KEY"; then
+        print_warning "Weak or compromised API key detected!"
+        echo -e "  Current key: ${YELLOW}$EXISTING_API_KEY${NC}"
+        echo ""
+        echo "This key is either:"
+        echo "  • A default/example key from .env.example"
+        echo "  • A previously compromised key"
+        echo "  • Too short to be secure"
+        echo ""
+        echo -n "Generate a new secure API key? [Y/n]: "
+        read -r response
+
+        # Default to yes if empty response
+        response=${response:-y}
+
+        if [[ "$response" =~ ^[Yy]$ ]] || [ -z "$response" ]; then
+            # Generate new secure key
+            NEW_API_KEY=$(generate_api_key)
+            sed -i "s/API_KEY=.*/API_KEY=$NEW_API_KEY/" "$INSTALL_DIR/.env.new"
+
+            print_success "Generated new secure API key"
+            echo -e "  ${GREEN}$NEW_API_KEY${NC}"
+            echo ""
+            print_info "Note: WebUI browser access does not require this key"
+            print_info "External tools/scripts will need this key for API access"
+            EXISTING_API_KEY="$NEW_API_KEY"
+        else
+            print_warning "Keeping existing API key (not recommended)"
+            sed -i "s/API_KEY=.*/API_KEY=$EXISTING_API_KEY/" "$INSTALL_DIR/.env.new"
+        fi
+    elif [[ -n "$EXISTING_API_KEY" ]]; then
+        # Key exists and is secure
+        print_success "Existing API key is secure, preserving it"
+        sed -i "s/API_KEY=.*/API_KEY=$EXISTING_API_KEY/" "$INSTALL_DIR/.env.new"
     else
-        # Generate new API key if none exists
-        RANDOM_API_KEY="sk-local-$(openssl rand -hex 16)"
-        sed -i "s/sk-local-your-secret-key-here/$RANDOM_API_KEY/" "$INSTALL_DIR/.env.new"
+        # No key exists, generate new one
+        print_info "No API key found, generating new secure key..."
+        RANDOM_API_KEY=$(generate_api_key)
+        sed -i "s/API_KEY=.*/API_KEY=$RANDOM_API_KEY/" "$INSTALL_DIR/.env.new"
+        print_success "Generated new API key: $RANDOM_API_KEY"
     fi
 
     # Copy any custom values from old .env that aren't in the new template
@@ -329,16 +407,17 @@ EOF
 print_success "Systemd service created at /etc/systemd/system/${SERVICE_NAME}.service"
 
 #==============================================================================
-# Step 10: Build containers with correct API key
+# Step 10: Build containers
 #==============================================================================
-print_info "Building containers with correct API key from .env..."
+print_info "Building containers..."
 
 cd "$INSTALL_DIR"
 
-# Build frontend container to ensure API key is baked in correctly
+# Build frontend container (BFF pattern - no API key in frontend)
+# The router handles authentication, so the frontend doesn't need the API key
 docker compose build webui-frontend
 
-print_success "Frontend container built with correct API key"
+print_success "Frontend container built (API key secured via BFF pattern)"
 
 #==============================================================================
 # Step 11: Enable and start service
