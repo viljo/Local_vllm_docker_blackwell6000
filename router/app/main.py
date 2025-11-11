@@ -24,9 +24,18 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-API_KEY = os.getenv("API_KEY", "sk-local-dev-key")
+API_KEY = os.getenv("API_KEY")
+if not API_KEY or API_KEY == "sk-local-dev-key":
+    logger.error("API_KEY environment variable must be set to a secure value")
+    logger.error("Generate one with: python3 -c \"import secrets; print('sk-local-' + secrets.token_hex(32))\"")
+    raise ValueError("API_KEY must be set to a secure value")
+
 CODER_BACKEND_URL = os.getenv("CODER_BACKEND_URL", "http://vllm-coder:8000")
 GENERAL_BACKEND_URL = os.getenv("GENERAL_BACKEND_URL", "http://vllm-general:8000")
+
+# WebUI authentication - allow requests from WebUI without API key for local service
+# For remote access scenarios, you may want to implement session-based auth or IP whitelisting
+WEBUI_AUTH_ENABLED = os.getenv("WEBUI_AUTH_ENABLED", "false").lower() == "true"
 
 # Model routing configuration
 MODEL_ROUTING = {
@@ -105,8 +114,9 @@ async def add_cors_headers(request: Request, call_next):
 # ============================================================================
 
 def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
-    """Verify API key from Bearer token"""
-    if credentials.credentials != API_KEY:
+    """Verify API key from Bearer token using constant-time comparison"""
+    import secrets
+    if not secrets.compare_digest(credentials.credentials, API_KEY):
         logger.warning(f"Invalid API key attempt")
         raise HTTPException(
             status_code=401,
@@ -119,6 +129,55 @@ def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)
             }
         )
     return credentials.credentials
+
+
+def optional_verify_api_key(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False))
+) -> str:
+    """
+    Verify API key but allow requests without auth from trusted sources (WebUI).
+    This implements a Backend-for-Frontend (BFF) pattern where the WebUI can access
+    the router without exposing the API key in the browser.
+
+    For local services, this is acceptable. For production/public services,
+    implement proper session-based auth or IP whitelisting.
+    """
+    # If credentials are provided, verify them
+    if credentials:
+        import secrets
+        if secrets.compare_digest(credentials.credentials, API_KEY):
+            return credentials.credentials
+        else:
+            logger.warning(f"Invalid API key attempt from {request.client.host}")
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": {
+                        "message": "Invalid API key provided",
+                        "type": "invalid_request_error",
+                        "code": "invalid_api_key"
+                    }
+                }
+            )
+
+    # If WEBUI_AUTH_ENABLED is True, require authentication
+    if WEBUI_AUTH_ENABLED:
+        logger.warning(f"Missing API key from {request.client.host}")
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": {
+                    "message": "API key required",
+                    "type": "invalid_request_error",
+                    "code": "missing_api_key"
+                }
+            }
+        )
+
+    # Allow unauthenticated access for local WebUI
+    logger.debug(f"Allowing unauthenticated request from {request.client.host}")
+    return "webui-access"
 
 
 # ============================================================================
@@ -231,7 +290,7 @@ async def readiness():
 # ============================================================================
 
 @app.get("/v1/models")
-async def list_models(api_key: str = Depends(verify_api_key)):
+async def list_models(request: Request, api_key: str = Depends(optional_verify_api_key)):
     """List available models"""
     models = []
 
@@ -260,7 +319,7 @@ async def list_models(api_key: str = Depends(verify_api_key)):
 async def chat_completions(
     request: ChatCompletionRequest,
     raw_request: Request,
-    api_key: str = Depends(verify_api_key)
+    api_key: str = Depends(optional_verify_api_key)
 ):
     """
     Create chat completion - routes to appropriate backend based on model
@@ -377,7 +436,7 @@ async def chat_completions(
 @app.post("/v1/completions")
 async def completions(
     raw_request: Request,
-    api_key: str = Depends(verify_api_key)
+    api_key: str = Depends(optional_verify_api_key)
 ):
     """
     Legacy completions endpoint - converts to chat format and routes

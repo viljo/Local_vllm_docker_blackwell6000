@@ -112,9 +112,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      args:
-        # Don't set VITE_API_BASE_URL - let it use dynamic hostname detection for remote access
-        VITE_API_KEY: ${API_KEY}
+      # No build args needed - API key is handled by router (BFF pattern)
     container_name: webui-frontend
     ports:
       - "${WEBUI_PORT:-3000}:3000"

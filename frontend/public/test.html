@@ -18,7 +18,7 @@
 <body>
     <h1>API Connection Test</h1>
     <p>Server: <span id="apiUrl"></span></p>
-    <p class="info">API Key: sk-local-2ac9387d659f7131f38d83e5f7bee469</p>
+    <p class="info">Testing WebUI access (no API key required from browser)</p>
 
     <div>
         <button onclick="testModels()">Test /v1/models</button>
@@ -46,19 +46,18 @@
     <script>
         const hostname = window.location.hostname;
         const API_BASE_URL = `http://${hostname}:8080/v1`;
-        const API_KEY = 'sk-local-2ac9387d659f7131f38d83e5f7bee469';
 
         document.getElementById('apiUrl').textContent = API_BASE_URL;
 
         // Populate curl commands
         document.getElementById('curlModels').textContent =
-            `curl -s -H "Authorization: Bearer ${API_KEY}" http://${hostname}:8080/v1/models`;
+            `curl -s http://${hostname}:8080/v1/models`;
 
         document.getElementById('curlChat').textContent =
-            `curl -X POST "http://${hostname}:8080/v1/chat/completions" -H "Content-Type: application/json" -H "Authorization: Bearer ${API_KEY}" -d '{"model":"deepseek-coder-33b-instruct","messages":[{"role":"user","content":"Hello"}],"max_tokens":20,"stream":false}'`;
+            `curl -X POST "http://${hostname}:8080/v1/chat/completions" -H "Content-Type: application/json" -d '{"model":"deepseek-coder-33b-instruct","messages":[{"role":"user","content":"Hello"}],"max_tokens":20,"stream":false}'`;
 
         document.getElementById('curlCors').textContent =
-            `curl -I -X OPTIONS -H "Origin: http://${hostname}:3000" -H "Access-Control-Request-Method: POST" -H "Access-Control-Request-Headers: content-type,authorization" http://${hostname}:8080/v1/chat/completions`;
+            `curl -I -X OPTIONS -H "Origin: http://${hostname}:3000" -H "Access-Control-Request-Method: POST" -H "Access-Control-Request-Headers: content-type" http://${hostname}:8080/v1/chat/completions`;
 
         function showResult(message, isError = false) {
             const result = document.getElementById('result');
@@ -69,11 +68,7 @@
         async function testModels() {
             showResult('Testing /v1/models...');
             try {
-                const response = await fetch(`${API_BASE_URL}/models`, {
-                    headers: {
-                        'Authorization': `Bearer ${API_KEY}`
-                    }
-                });
+                const response = await fetch(`${API_BASE_URL}/models`);
                 const data = await response.json();
                 showResult('Success!\n\n' + JSON.stringify(data, null, 2));
             } catch (error) {
@@ -87,8 +82,7 @@
                 const response = await fetch(`${API_BASE_URL}/chat/completions`, {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${API_KEY}`
+                        'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
                         model: 'deepseek-coder-33b-instruct',
@@ -111,7 +105,7 @@
                     method: 'OPTIONS',
                     headers: {
                         'Access-Control-Request-Method': 'POST',
-                        'Access-Control-Request-Headers': 'content-type,authorization'
+                        'Access-Control-Request-Headers': 'content-type'
                     }
                 });
                 const headers = {};
