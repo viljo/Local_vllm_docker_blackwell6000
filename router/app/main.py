@@ -15,8 +15,26 @@ from fastapi import FastAPI, Request, Response, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import StreamingResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 import httpx
+from typing import Union
+
+# Tool calling modules
+from .transformations import (
+    inject_tools_into_messages,
+    transform_response_with_tools,
+    validate_tool_result_messages,
+    create_error_response
+)
+from .tool_parsing import (
+    generate_tool_call_id,
+    extract_tool_calls_from_text,
+    validate_tool_exists
+)
+from .streaming import (
+    stream_with_tool_detection,
+    simple_stream_passthrough
+)
 
 # Configure logging
 logging.basicConfig(
@@ -254,18 +272,50 @@ def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)
 # ============================================================================
 
 class ChatMessage(BaseModel):
-    role: str = Field(..., pattern="^(system|user|assistant)$")
-    content: str
+    model_config = ConfigDict(extra='allow')
+
+    role: str = Field(..., pattern="^(system|user|assistant|tool)$")
+    content: Optional[str] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None
+    tool_call_id: Optional[str] = None
+    name: Optional[str] = None
+
+
+class ToolFunction(BaseModel):
+    """Function definition for tool calling"""
+    model_config = ConfigDict(extra='allow')
+
+    name: str = Field(..., pattern=r'^[a-zA-Z0-9_-]+$')
+    description: Optional[str] = None
+    parameters: Dict[str, Any]
+    strict: Optional[bool] = False
+
+
+class Tool(BaseModel):
+    """Tool definition with function specification"""
+    model_config = ConfigDict(extra='allow')
+
+    type: str = "function"
+    function: ToolFunction
 
 
 class ChatCompletionRequest(BaseModel):
+    """Chat completion request with tool calling support"""
+    model_config = ConfigDict(extra='allow')  # Accept unknown parameters
+
     model: str
     messages: List[ChatMessage]
     stream: bool = False
     max_tokens: Optional[int] = None
     temperature: Optional[float] = 1.0
     top_p: Optional[float] = 1.0
-    stop: Optional[List[str]] = None
+    stop: Optional[Union[str, List[str]]] = None
+
+    # Tool calling parameters (NEW)
+    tools: Optional[List[Tool]] = None
+    tool_choice: Optional[Union[str, Dict[str, Any]]] = None
+    parallel_tool_calls: Optional[bool] = None
+    stream_options: Optional[Dict[str, Any]] = None
 
 
 class ModelInfo(BaseModel):
@@ -405,7 +455,8 @@ async def chat_completions(
     logger.info(
         f"[{request_id}] Chat completion request - "
         f"model={request.model}, stream={request.stream}, "
-        f"messages={len(request.messages)}, client={client_ip}"
+        f"messages={len(request.messages)}, tools={len(request.tools or [])}, "
+        f"client={client_ip}"
     )
 
     # Route to appropriate backend
@@ -416,13 +467,43 @@ async def chat_completions(
     backend_endpoint = f"{backend_url}/v1/chat/completions"
 
     try:
+        # Validate tool result messages if present
+        messages_for_validation = [
+            msg.model_dump() if hasattr(msg, 'model_dump') else msg
+            for msg in request.messages
+        ]
+
+        if request.tools and any(msg.get('role') == 'tool' for msg in messages_for_validation):
+            try:
+                validate_tool_result_messages(messages_for_validation)
+            except ValueError as e:
+                logger.error(f"[{request_id}] Tool validation error: {e}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=create_error_response(
+                        message=str(e),
+                        error_type="invalid_request_error",
+                        code="invalid_tool_call_id"
+                    )
+                )
+
+        # Transform request: inject tools into messages if tools are provided
+        messages = inject_tools_into_messages(request.messages, request.tools)
+
         # Prepare request payload and translate model name to backend model name
         payload = request.model_dump(exclude_none=True)
+        payload["messages"] = messages
         backend_model = MODEL_NAME_MAPPING.get(request.model, request.model)
         payload["model"] = backend_model
 
+        # Remove tool-calling parameters that backend doesn't support
+        payload.pop("tools", None)
+        payload.pop("tool_choice", None)
+        payload.pop("parallel_tool_calls", None)
+        payload.pop("stream_options", None)
+
         if request.stream:
-            # Streaming response
+            # Streaming response with tool detection and usage stats
             async def stream_generator():
                 async with http_client.stream(
                     "POST",
@@ -439,8 +520,18 @@ async def chat_completions(
                             detail=error_text.decode()
                         )
 
-                    async for chunk in response.aiter_text():
-                        yield chunk
+                    # Use enhanced streaming if tools are present or usage stats requested
+                    if request.tools or (request.stream_options and request.stream_options.get("include_usage")):
+                        async for chunk in stream_with_tool_detection(
+                            response.aiter_text(),
+                            request,
+                            backend_model
+                        ):
+                            yield chunk
+                    else:
+                        # Simple passthrough for non-tool requests
+                        async for chunk in simple_stream_passthrough(response.aiter_text()):
+                            yield chunk
 
             return StreamingResponse(
                 stream_generator(),
@@ -462,8 +553,12 @@ async def chat_completions(
                     detail=response.json()
                 )
 
+            # Transform response to inject tool_calls if detected
+            backend_response = response.json()
+            transformed_response = transform_response_with_tools(backend_response, request)
+
             logger.info(f"[{request_id}] Request completed successfully")
-            return response.json()
+            return transformed_response
 
     except httpx.TimeoutException:
         logger.error(f"[{request_id}] Backend timeout")
