@@ -1,0 +1,496 @@
+openapi: 3.1.0
+info:
+  title: Local LLM Service - Tool Calling API
+  description: |
+    OpenAI-compatible chat completions API with function/tool calling support.
+    Enables Cline and other AI coding assistants to interact with local models.
+  version: 1.0.0
+  contact:
+    name: Local LLM Service
+    url: https://github.com/viljo/Local_vllm_docker_blackwell6000
+
+servers:
+  - url: http://localhost:8080/v1
+    description: Local development server
+  - url: http://localhost:8080/v1
+    description: Production server
+
+security:
+  - BearerAuth: []
+
+paths:
+  /chat/completions:
+    post:
+      summary: Create chat completion with tool calling support
+      description: |
+        Generate a chat completion with optional tool/function calling.
+        Supports both streaming and non-streaming responses.
+        Compatible with OpenAI ChatGPT API and Cline AI assistant.
+      operationId: createChatCompletion
+      tags:
+        - Chat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionRequest'
+            examples:
+              simpleChat:
+                summary: Simple chat without tools
+                value:
+                  model: "gpt-oss-120b"
+                  messages:
+                    - role: "user"
+                      content: "Hello, how are you?"
+              toolCalling:
+                summary: Chat with tool calling
+                value:
+                  model: "gpt-oss-120b"
+                  messages:
+                    - role: "user"
+                      content: "Read the file /tmp/test.txt"
+                  tools:
+                    - type: "function"
+                      function:
+                        name: "read_file"
+                        description: "Read contents of a file"
+                        parameters:
+                          type: "object"
+                          properties:
+                            path:
+                              type: "string"
+                              description: "File path to read"
+                          required: ["path"]
+                          additionalProperties: false
+                  tool_choice: "auto"
+              multiTurn:
+                summary: Multi-turn with tool results
+                value:
+                  model: "gpt-oss-120b"
+                  messages:
+                    - role: "user"
+                      content: "Read /tmp/test.txt"
+                    - role: "assistant"
+                      content: null
+                      tool_calls:
+                        - id: "call_abc123"
+                          type: "function"
+                          function:
+                            name: "read_file"
+                            arguments: '{"path":"/tmp/test.txt"}'
+                    - role: "tool"
+                      tool_call_id: "call_abc123"
+                      name: "read_file"
+                      content: "File contents here..."
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionResponse'
+              examples:
+                textResponse:
+                  summary: Text response without tools
+                  value:
+                    id: "chatcmpl-abc123"
+                    object: "chat.completion"
+                    created: 1699896916
+                    model: "gpt-oss-120b"
+                    choices:
+                      - index: 0
+                        message:
+                          role: "assistant"
+                          content: "Hello! I'm doing well, thank you for asking."
+                        finish_reason: "stop"
+                    usage:
+                      prompt_tokens: 15
+                      completion_tokens: 12
+                      total_tokens: 27
+                toolCallResponse:
+                  summary: Response with tool calls
+                  value:
+                    id: "chatcmpl-abc124"
+                    object: "chat.completion"
+                    created: 1699896920
+                    model: "gpt-oss-120b"
+                    choices:
+                      - index: 0
+                        message:
+                          role: "assistant"
+                          content: null
+                          tool_calls:
+                            - id: "call_abc123xyz"
+                              type: "function"
+                              function:
+                                name: "read_file"
+                                arguments: '{"path":"/tmp/test.txt"}'
+                        finish_reason: "tool_calls"
+                    usage:
+                      prompt_tokens: 95
+                      completion_tokens: 18
+                      total_tokens: 113
+            text/event-stream:
+              schema:
+                type: string
+                description: Server-Sent Events stream
+              example: |
+                data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1699896916,"model":"gpt-oss-120b","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}
+
+                data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1699896916,"model":"gpt-oss-120b","choices":[{"index":0,"delta":{"content":"!"},"finish_reason":null}]}
+
+                data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1699896916,"model":"gpt-oss-120b","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":15,"completion_tokens":2,"total_tokens":17}}
+
+                data: [DONE]
+        '400':
+          description: Bad request - invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidToolSchema:
+                  summary: Invalid tool definition
+                  value:
+                    error:
+                      message: "Invalid JSON schema for tool 'read_file': missing 'type' in parameters"
+                      type: "invalid_request_error"
+                      param: "tools[0].function.parameters"
+                      code: "invalid_tool_schema"
+                missingToolCallId:
+                  summary: Tool message without tool_call_id
+                  value:
+                    error:
+                      message: "Role 'tool' must include 'tool_call_id' field"
+                      type: "invalid_request_error"
+                      param: "messages[2].tool_call_id"
+                      code: "missing_required_field"
+        '401':
+          description: Unauthorized - invalid API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Unprocessable entity - validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: API key for authentication (format: sk-local-xxx)
+
+  schemas:
+    ChatCompletionRequest:
+      type: object
+      required:
+        - model
+        - messages
+      properties:
+        model:
+          type: string
+          description: Model to use for completion
+          example: "gpt-oss-120b"
+        messages:
+          type: array
+          description: Conversation history
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+        stream:
+          type: boolean
+          default: false
+          description: Enable streaming responses (SSE)
+        max_tokens:
+          type: integer
+          minimum: 1
+          description: Maximum tokens to generate
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+          default: 1.0
+          description: Sampling temperature
+        top_p:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 1.0
+          description: Nucleus sampling probability
+        stop:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+          description: Stop sequences
+        tools:
+          type: array
+          description: Available functions for the assistant to call
+          items:
+            $ref: '#/components/schemas/Tool'
+        tool_choice:
+          oneOf:
+            - type: string
+              enum: ["auto", "none", "required"]
+            - type: object
+              properties:
+                type:
+                  type: string
+                  enum: ["function"]
+                function:
+                  type: object
+                  required:
+                    - name
+                  properties:
+                    name:
+                      type: string
+          description: |
+            Control tool selection:
+            - "auto": Model decides
+            - "none": No tool calls
+            - "required": Forces tool call
+            - Object: Forces specific tool
+        parallel_tool_calls:
+          type: boolean
+          default: true
+          description: Allow multiple simultaneous tool calls
+        stream_options:
+          type: object
+          properties:
+            include_usage:
+              type: boolean
+              default: false
+              description: Include usage stats in streaming final chunk
+
+    ChatMessage:
+      type: object
+      required:
+        - role
+      properties:
+        role:
+          type: string
+          enum: ["system", "user", "assistant", "tool"]
+          description: Message role
+        content:
+          type: string
+          nullable: true
+          description: Message content (can be null for assistant with tool_calls)
+        tool_calls:
+          type: array
+          description: Function calls (only for assistant role)
+          items:
+            $ref: '#/components/schemas/ToolCall'
+        tool_call_id:
+          type: string
+          description: ID of the tool call this message responds to (only for tool role)
+          pattern: '^call_[a-zA-Z0-9]+'
+        name:
+          type: string
+          description: Function or tool name for context
+
+    ToolCall:
+      type: object
+      required:
+        - id
+        - type
+        - function
+      properties:
+        id:
+          type: string
+          description: Unique tool call identifier
+          pattern: '^call_[a-zA-Z0-9]+'
+          example: "call_abc123xyz"
+        type:
+          type: string
+          enum: ["function"]
+          description: Tool type (currently only "function" supported)
+        function:
+          type: object
+          required:
+            - name
+            - arguments
+          properties:
+            name:
+              type: string
+              description: Function name to call
+              example: "read_file"
+            arguments:
+              type: string
+              description: JSON string of function arguments
+              example: '{"path":"/tmp/test.txt"}'
+
+    Tool:
+      type: object
+      required:
+        - type
+        - function
+      properties:
+        type:
+          type: string
+          enum: ["function"]
+          description: Tool type
+        function:
+          type: object
+          required:
+            - name
+            - parameters
+          properties:
+            name:
+              type: string
+              pattern: '^[a-zA-Z0-9_-]+$'
+              description: Function name
+              example: "read_file"
+            description:
+              type: string
+              description: Function description to help model understand usage
+              example: "Read the contents of a file at the specified path"
+            parameters:
+              type: object
+              description: JSON Schema defining function parameters
+              required:
+                - type
+                - properties
+              properties:
+                type:
+                  type: string
+                  enum: ["object"]
+                properties:
+                  type: object
+                required:
+                  type: array
+                  items:
+                    type: string
+                additionalProperties:
+                  type: boolean
+            strict:
+              type: boolean
+              default: false
+              description: Enable strict schema validation
+
+    ChatCompletionResponse:
+      type: object
+      required:
+        - id
+        - object
+        - created
+        - model
+        - choices
+      properties:
+        id:
+          type: string
+          description: Unique response identifier
+          pattern: '^chatcmpl-[a-zA-Z0-9]+'
+          example: "chatcmpl-abc123xyz"
+        object:
+          type: string
+          enum: ["chat.completion", "chat.completion.chunk"]
+          description: Object type
+        created:
+          type: integer
+          description: Unix timestamp
+          example: 1699896916
+        model:
+          type: string
+          description: Model used
+          example: "gpt-oss-120b"
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/Choice'
+        usage:
+          $ref: '#/components/schemas/Usage'
+
+    Choice:
+      type: object
+      required:
+        - index
+        - finish_reason
+      properties:
+        index:
+          type: integer
+          description: Choice index
+        message:
+          $ref: '#/components/schemas/ChatMessage'
+          description: Complete message (non-streaming)
+        delta:
+          $ref: '#/components/schemas/ChatMessage'
+          description: Message delta (streaming only)
+        finish_reason:
+          type: string
+          enum: ["stop", "tool_calls", "length"]
+          nullable: true
+          description: |
+            Reason generation stopped:
+            - "stop": Natural completion
+            - "tool_calls": Function calls requested
+            - "length": Token limit reached
+            - null: Not finished (streaming)
+
+    Usage:
+      type: object
+      required:
+        - prompt_tokens
+        - completion_tokens
+        - total_tokens
+      properties:
+        prompt_tokens:
+          type: integer
+          description: Tokens in prompt
+          example: 82
+        completion_tokens:
+          type: integer
+          description: Tokens in completion
+          example: 17
+        total_tokens:
+          type: integer
+          description: Total tokens used
+          example: 99
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - message
+            - type
+          properties:
+            message:
+              type: string
+              description: Human-readable error message
+            type:
+              type: string
+              description: Error type
+              enum:
+                - invalid_request_error
+                - authentication_error
+                - permission_denied_error
+                - not_found_error
+                - rate_limit_error
+                - server_error
+            param:
+              type: string
+              nullable: true
+              description: Parameter that caused the error
+            code:
+              type: string
+              description: Machine-readable error code
+
+tags:
+  - name: Chat
+    description: Chat completion operations with tool calling support

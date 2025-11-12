@@ -1,0 +1,101 @@
+================================================================================
+CLINE QUICK START - Local LLM Service with Tool Calling
+================================================================================
+
+⚠️  NETWORK SHARED SERVICE - Use on all computers on your network!
+
+================================================================================
+CONFIGURATION (Copy-paste into VSCode settings.json)
+================================================================================
+
+{
+  "cline.apiProvider": "openai-compatible",
+  "cline.openAiCompatible.baseUrl": "http://172.30.0.54:8080/v1",
+  "cline.openAiCompatible.apiKey": "sk-local-58511ab0d37124beb566b567e54b8307",
+  "cline.openAiCompatible.modelId": "gpt-oss-120b"
+}
+
+================================================================================
+HOW TO SET UP
+================================================================================
+
+1. Open VSCode
+2. Press Ctrl+, (or Cmd+, on Mac)
+3. Search for "Cline"
+4. Click "Edit in settings.json"
+5. Paste the configuration above
+6. Reload VSCode window (Ctrl+Shift+P → "Reload Window")
+
+OR
+
+Just open this project - settings are already configured in .vscode/settings.json!
+
+================================================================================
+QUICK TESTS
+================================================================================
+
+Test 1 - Health Check:
+    curl http://172.30.0.54:8080/health
+
+Test 2 - List Models:
+    curl -H "Authorization: Bearer sk-local-58511ab0d37124beb566b567e54b8307" \
+         http://172.30.0.54:8080/v1/models
+
+Test 3 - Simple Chat:
+    Run: ./test_tool_calling_curl.sh
+
+================================================================================
+IMPORTANT NOTES
+================================================================================
+
+✓ Service URL: http://172.30.0.54:8080/v1
+✓ Use this URL on ALL computers (including the server)
+✓ API Key: sk-local-58511ab0d37124beb566b567e54b8307
+✓ Best Model: gpt-oss-120b (recommended for tool calling)
+
+✓ Features Enabled:
+  - Tool calling (file operations, bash commands)
+  - Multi-turn conversations
+  - Parallel tool execution
+  - Streaming responses
+  - Usage statistics
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+Problem: Cline can't connect
+Fix: Check service is running → docker ps | grep vllm-router
+
+Problem: Wrong API key
+Fix: Get current key → docker exec vllm-router env | grep API_KEY
+
+Problem: Settings not working
+Fix: Reload VSCode → Ctrl+Shift+P → "Reload Window"
+
+Full troubleshooting: See CLINE_TROUBLESHOOTING.md
+
+================================================================================
+TEST COMMANDS IN CLINE
+================================================================================
+
+Try these once Cline is configured:
+
+1. "Read the README.md file"
+2. "List all Python files in router/app/"
+3. "Show me the git status"
+4. "Explain the transformations.py file"
+
+================================================================================
+STATUS
+================================================================================
+
+✅ Service: Running and tested
+✅ Tool Calling: Fully implemented
+✅ Network: Accessible from all computers
+✅ API: OpenAI-compatible
+
+Last Updated: 2025-11-12
+Implementation: PR #6 (003-cline-tool-calling)
+
+================================================================================
