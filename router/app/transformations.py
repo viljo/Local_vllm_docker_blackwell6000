@@ -111,21 +111,39 @@ def inject_tools_into_messages(messages: List, tools: Optional[List]) -> List:
         tools: List of Tool objects or None
 
     Returns:
-        Modified list of messages with tool instructions injected
+        Modified list of message dicts (always returns dicts, never Pydantic models)
     """
+    # Always convert messages to dicts, even if no tools
+    # Use exclude_none=True to avoid sending None values to backend
+    converted_messages = []
+    for msg in messages:
+        # Handle both Pydantic models and dicts
+        if hasattr(msg, 'model_dump'):
+            msg_dict = msg.model_dump(exclude_none=True)
+        elif hasattr(msg, 'dict'):
+            msg_dict = msg.dict(exclude_none=True)
+        else:
+            msg_dict = msg
+
+        # Handle multi-modal content (array format) - convert to simple string
+        # Cline sends content as [{"type": "text", "text": "..."}]
+        if 'content' in msg_dict and isinstance(msg_dict['content'], list):
+            text_parts = []
+            for part in msg_dict['content']:
+                if isinstance(part, dict) and part.get('type') == 'text':
+                    text_parts.append(part.get('text', ''))
+            msg_dict['content'] = '\n\n'.join(text_parts) if text_parts else ''
+
+        converted_messages.append(msg_dict)
+
     if not tools:
-        return messages
+        return converted_messages
 
     tool_prompt = tools_to_system_prompt(tools)
     modified = []
     has_system = False
 
-    for msg in messages:
-        # Handle both Pydantic models and dicts
-        msg_dict = msg.model_dump() if hasattr(msg, 'model_dump') else (
-            msg.dict() if hasattr(msg, 'dict') else msg
-        )
-
+    for msg_dict in converted_messages:
         if msg_dict.get('role') == "system" and not has_system:
             # Append to existing system message
             content = f"{msg_dict.get('content', '')}\n\n{tool_prompt}"

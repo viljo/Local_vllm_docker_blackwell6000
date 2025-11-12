@@ -36,12 +36,44 @@ from .streaming import (
     simple_stream_passthrough
 )
 
-# Configure logging
+# Configure logging with enhanced format
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Add detailed format for ERROR level
+class DetailedErrorFormatter(logging.Formatter):
+    """Custom formatter that adds extra detail for error logs"""
+
+    def format(self, record):
+        # Standard format for non-errors
+        if record.levelno < logging.ERROR:
+            return super().format(record)
+
+        # Enhanced format for errors with more context
+        result = super().format(record)
+
+        # Add exception info if available
+        if record.exc_info:
+            result += f"\nException: {record.exc_info[0].__name__}"
+
+        return result
+
+# Configure root logger
 logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=LOG_LEVEL,
+    format=LOG_FORMAT,
+    handlers=[
+        logging.StreamHandler()
+    ]
 )
+
+# Get logger and set custom formatter
 logger = logging.getLogger(__name__)
+for handler in logging.getLogger().handlers:
+    handler.setFormatter(DetailedErrorFormatter(LOG_FORMAT))
+
+# Log startup
+logger.info(f"Starting vLLM Router - Log Level: {LOG_LEVEL}")
 
 # Configuration
 API_KEY = os.getenv("API_KEY", "sk-local-dev-key")
@@ -224,6 +256,32 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Exception handler for validation errors (422)
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Log and return detailed validation errors"""
+    error_details = exc.errors()
+    logger.error(f"Validation error for {request.method} {request.url.path}")
+    logger.error(f"Client: {request.client.host if request.client else 'unknown'}")
+    logger.error(f"Validation errors: {error_details}")
+
+    # Return OpenAI-compatible error response
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": {
+                "message": "Invalid request parameters",
+                "type": "invalid_request_error",
+                "code": "validation_error",
+                "param": error_details[0]["loc"][-1] if error_details else None,
+                "details": error_details
+            }
+        }
+    )
+
 # CORS configuration - allow all origins for remote access
 app.add_middleware(
     CORSMiddleware,
@@ -275,7 +333,8 @@ class ChatMessage(BaseModel):
     model_config = ConfigDict(extra='allow')
 
     role: str = Field(..., pattern="^(system|user|assistant|tool)$")
-    content: Optional[str] = None
+    # Support both string and array content (OpenAI Vision API format)
+    content: Optional[Union[str, List[Dict[str, Any]]]] = None
     tool_calls: Optional[List[Dict[str, Any]]] = None
     tool_call_id: Optional[str] = None
     name: Optional[str] = None
@@ -456,6 +515,7 @@ async def chat_completions(
         f"[{request_id}] Chat completion request - "
         f"model={request.model}, stream={request.stream}, "
         f"messages={len(request.messages)}, tools={len(request.tools or [])}, "
+        f"max_tokens={request.max_tokens}, "
         f"client={client_ip}"
     )
 
@@ -501,6 +561,17 @@ async def chat_completions(
         payload.pop("tool_choice", None)
         payload.pop("parallel_tool_calls", None)
         payload.pop("stream_options", None)
+
+        # Handle max_tokens: if None, set a reasonable default
+        # vLLM can calculate negative max_tokens if prompt is too long and max_tokens=None
+        if payload.get("max_tokens") is None:
+            # Set a reasonable default that leaves room for the prompt
+            default_max_tokens = 4096
+            payload["max_tokens"] = default_max_tokens
+            logger.info(f"[{request_id}] max_tokens not specified, using default: {default_max_tokens}")
+
+        # Log payload being sent to backend (for debugging)
+        logger.info(f"[{request_id}] Sending to backend - max_tokens={payload.get('max_tokens')}")
 
         if request.stream:
             # Streaming response with tool detection and usage stats
@@ -584,6 +655,9 @@ async def chat_completions(
                 }
             }
         )
+    except HTTPException:
+        # Re-raise HTTPException without modification (for validation errors, etc.)
+        raise
     except Exception as e:
         logger.error(f"[{request_id}] Unexpected error: {e}", exc_info=True)
         raise HTTPException(
